@@ -902,6 +902,7 @@
 
         savedProgressMap[key] = {
             listenedMs: currentSession.listenedMs || 0,
+            maxPositionMs: currentSession.maxPositionMs || 0,
             lastProgressMs: currentSession.lastProgressMs || 0,
             scrobbled: Boolean(currentSession.scrobbled),
             queuedOffline: Boolean(currentSession.queuedOffline),
@@ -963,6 +964,7 @@
         const progressKey = getTrackProgressKey(processed);
 
         let initialListenedMs = settings.syncSeekProgress ? currentProgressMs : 0;
+        let initialMaxPositionMs = currentProgressMs;
         let initialScrobbled = false;
         let initialQueuedOffline = false;
         let initialCancelled = false;
@@ -977,11 +979,19 @@
                 if (!saved.scrobbled) {
                     // Resume saved un-scrobbled progress from before pause/skip/restart
                     initialListenedMs = Math.max(initialListenedMs, saved.listenedMs || 0);
+                    initialMaxPositionMs = Math.max(
+                        currentProgressMs,
+                        saved.maxPositionMs || saved.listenedMs || 0
+                    );
                     initialCancelled = Boolean(saved.cancelled);
                     initialStartedAt = saved.startedAtUnix || initialStartedAt;
                 } else if (currentProgressMs > 8000) {
                     // Still mid-song on a play that already scrobbled (e.g. reopened Spotify while paused)
                     initialListenedMs = Math.max(initialListenedMs, saved.listenedMs || 0);
+                    initialMaxPositionMs = Math.max(
+                        currentProgressMs,
+                        saved.maxPositionMs || saved.listenedMs || 0
+                    );
                     initialScrobbled = true;
                     initialQueuedOffline = Boolean(saved.queuedOffline);
                     initialStartedAt = saved.startedAtUnix || initialStartedAt;
@@ -997,6 +1007,7 @@
             ...processed,
             startedAtUnix: initialStartedAt,
             listenedMs: initialListenedMs,
+            maxPositionMs: initialMaxPositionMs,
             targetListenMs,
             lastProgressMs: currentProgressMs,
             nowPlayingSent: false,
@@ -1083,25 +1094,43 @@
         const seekDelta = Math.abs(currentProgressMs - currentSession.lastProgressMs);
         currentSession.lastProgressMs = currentProgressMs;
 
-        // Sync progress if user seeked / passed minutes on the timeline
-        if (settings.syncSeekProgress && currentProgressMs > currentSession.listenedMs) {
-            currentSession.listenedMs = currentProgressMs;
-            if (seekDelta > 2500) {
+        const maxPos = currentSession.maxPositionMs || 0;
+        const isRewoundBehindSaved = currentProgressMs + 1500 < maxPos;
+
+        if (isRewoundBehindSaved) {
+            // User rewound / went back: keep progress saved and wait until playback reaches maxPositionMs again
+            if (seekDelta > 2000) {
                 persistCurrentSessionProgress();
+            }
+        } else {
+            // Playback has reached or passed the furthest saved position
+            currentSession.maxPositionMs = Math.max(maxPos, currentProgressMs);
+
+            if (settings.syncSeekProgress && currentProgressMs > currentSession.listenedMs) {
+                currentSession.listenedMs = currentProgressMs;
+                if (seekDelta > 2500) {
+                    persistCurrentSessionProgress();
+                }
+            }
+
+            if (Spicetify.Player.isPlaying()) {
+                if (settings.syncSeekProgress) {
+                    currentSession.listenedMs = Math.max(currentSession.listenedMs, currentProgressMs);
+                } else {
+                    currentSession.listenedMs += 1000;
+                }
+                currentSession.maxPositionMs = Math.max(
+                    currentSession.maxPositionMs,
+                    currentSession.listenedMs
+                );
+                tickCounter++;
+                if (tickCounter % 3 === 0) {
+                    persistCurrentSessionProgress();
+                }
             }
         }
 
         const isPlaying = Spicetify.Player.isPlaying();
-        if (isPlaying) {
-            currentSession.listenedMs = Math.max(
-                currentSession.listenedMs + 1000,
-                settings.syncSeekProgress ? currentProgressMs : 0
-            );
-            tickCounter++;
-            if (tickCounter % 3 === 0) {
-                persistCurrentSessionProgress();
-            }
-        }
 
         // Send Now Playing after 3 seconds of progress (avoids rapid skip spam)
         if (
@@ -2028,7 +2057,14 @@
             labelEl.textContent = 'Scrobble skipped for this play';
         } else {
             const remainingSec = Math.max(0, targetSec - listenedSec);
-            labelEl.textContent = `${formatTimeSec(listenedSec)} / ${formatTimeSec(targetSec)} (${pct}% • ${remainingSec}s left)`;
+            const curPosMs = Spicetify.Player.getProgress() || 0;
+            const maxPosMs = currentSession.maxPositionMs || 0;
+            if (curPosMs + 1500 < maxPosMs) {
+                const resumeAtSec = Math.floor(maxPosMs / 1000);
+                labelEl.textContent = `${formatTimeSec(listenedSec)} / ${formatTimeSec(targetSec)} (${pct}% • Saved, resumes at ${formatTimeSec(resumeAtSec)})`;
+            } else {
+                labelEl.textContent = `${formatTimeSec(listenedSec)} / ${formatTimeSec(targetSec)} (${pct}% • ${remainingSec}s left)`;
+            }
         }
     }
 
