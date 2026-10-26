@@ -16,12 +16,14 @@
         blocklist: 'spicetify_fm_blocklist_v1',
         offlineQueue: 'spicetify_fm_queue_v1',
         sessionLog: 'spicetify_fm_session_log_v1',
+        trackProgress: 'spicetify_fm_progress_v1',
     };
 
     const LASTFM_API_URL = 'https://ws.audioscrobbler.com/2.0/';
     const MAX_QUEUE_SIZE = 500;
     const MAX_BATCH_SCROBBLES = 50;
     const MAX_SESSION_LOG = 50;
+    const MAX_SAVED_PROGRESS = 100;
 
     const DEFAULT_SETTINGS = {
         apiKey: '',
@@ -37,6 +39,10 @@
         scrobblePodcasts: false,
         showPlaybarPill: true,
         showNotifications: false,
+
+        // Progress memory & seek bar sync
+        saveTrackProgress: true,   // Save & restore progress when pausing, skipping, or restarting app
+        syncSeekProgress: true,    // Update progress when seeking/passing minutes on the timeline
 
         // Pano Scrobbler timing rules
         thresholdPercent: 50,      // 25% to 95%
@@ -73,6 +79,10 @@
     // Recent session scrobbles
     let sessionLog = loadJson(STORAGE_KEYS.sessionLog, []);
     if (!Array.isArray(sessionLog)) sessionLog = [];
+
+    // Saved per-track listening progress across pauses, skips, and restarts
+    let savedProgressMap = loadJson(STORAGE_KEYS.trackProgress, {});
+    if (!savedProgressMap || typeof savedProgressMap !== 'object') savedProgressMap = {};
 
     // Active playback tracking state
     let currentSession = null;
@@ -875,11 +885,54 @@
                 notify(`Saved to Offline Queue: ${session.track} (${err.message})`, true);
             }
         } finally {
+            persistCurrentSessionProgress();
             updateUI();
         }
     }
 
-    function startNewTrackSession() {
+    function getTrackProgressKey(meta) {
+        if (!meta) return '';
+        return meta.uri || normalizeEditKey(meta.rawArtist, meta.rawTrack);
+    }
+
+    function persistCurrentSessionProgress() {
+        if (!currentSession || !settings.saveTrackProgress) return;
+        const key = getTrackProgressKey(currentSession);
+        if (!key) return;
+
+        savedProgressMap[key] = {
+            listenedMs: currentSession.listenedMs || 0,
+            lastProgressMs: currentSession.lastProgressMs || 0,
+            scrobbled: Boolean(currentSession.scrobbled),
+            queuedOffline: Boolean(currentSession.queuedOffline),
+            cancelled: Boolean(currentSession.cancelled),
+            startedAtUnix: currentSession.startedAtUnix || Math.floor(Date.now() / 1000),
+            updatedAt: Date.now(),
+        };
+
+        // Prune oldest entries if map exceeds MAX_SAVED_PROGRESS
+        const keys = Object.keys(savedProgressMap);
+        if (keys.length > MAX_SAVED_PROGRESS) {
+            keys.sort((a, b) => (savedProgressMap[a]?.updatedAt || 0) - (savedProgressMap[b]?.updatedAt || 0));
+            const toDelete = keys.slice(0, keys.length - MAX_SAVED_PROGRESS);
+            for (const k of toDelete) {
+                delete savedProgressMap[k];
+            }
+        }
+
+        try {
+            localStorage.setItem(STORAGE_KEYS.trackProgress, JSON.stringify(savedProgressMap));
+        } catch (err) {
+            console.warn('[SpicetifyFM] Failed saving track progress:', err);
+        }
+    }
+
+    function startNewTrackSession({ forceFresh = false } = {}) {
+        // Save outgoing track's progress before switching
+        if (currentSession && !forceFresh) {
+            persistCurrentSessionProgress();
+        }
+
         const raw = extractRawSpotifyMetadata();
         if (!raw) {
             currentSession = null;
@@ -906,19 +959,51 @@
         }
 
         const targetListenMs = calculateTargetListenMs(processed.durationMs);
+        const currentProgressMs = Spicetify.Player.getProgress() || 0;
+        const progressKey = getTrackProgressKey(processed);
+
+        let initialListenedMs = settings.syncSeekProgress ? currentProgressMs : 0;
+        let initialScrobbled = false;
+        let initialQueuedOffline = false;
+        let initialCancelled = false;
+        let initialStartedAt = Math.floor(Date.now() / 1000);
+
+        if (!forceFresh && settings.saveTrackProgress && progressKey && savedProgressMap[progressKey]) {
+            const saved = savedProgressMap[progressKey];
+            const ageMs = Date.now() - (saved.updatedAt || 0);
+            const maxAgeMs = 24 * 60 * 60 * 1000; // 24 hours
+
+            if (ageMs < maxAgeMs) {
+                if (!saved.scrobbled) {
+                    // Resume saved un-scrobbled progress from before pause/skip/restart
+                    initialListenedMs = Math.max(initialListenedMs, saved.listenedMs || 0);
+                    initialCancelled = Boolean(saved.cancelled);
+                    initialStartedAt = saved.startedAtUnix || initialStartedAt;
+                } else if (currentProgressMs > 8000) {
+                    // Still mid-song on a play that already scrobbled (e.g. reopened Spotify while paused)
+                    initialListenedMs = Math.max(initialListenedMs, saved.listenedMs || 0);
+                    initialScrobbled = true;
+                    initialQueuedOffline = Boolean(saved.queuedOffline);
+                    initialStartedAt = saved.startedAtUnix || initialStartedAt;
+                } else {
+                    // Song started fresh from 0:00 after previously scrobbling -> clear old state for new play
+                    delete savedProgressMap[progressKey];
+                }
+            }
+        }
 
         currentSession = {
             id: `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
             ...processed,
-            startedAtUnix: Math.floor(Date.now() / 1000),
-            listenedMs: 0,
+            startedAtUnix: initialStartedAt,
+            listenedMs: initialListenedMs,
             targetListenMs,
-            lastProgressMs: Spicetify.Player.getProgress() || 0,
+            lastProgressMs: currentProgressMs,
             nowPlayingSent: false,
-            scrobbled: false,
+            scrobbled: initialScrobbled,
             scrobbling: false,
-            queuedOffline: false,
-            cancelled: false,
+            queuedOffline: initialQueuedOffline,
+            cancelled: initialCancelled,
             skippedByPolicy,
             policyReason,
             userPlaycount: null,
@@ -926,6 +1011,7 @@
             lastFmUrl: '',
         };
 
+        persistCurrentSessionProgress();
         fetchTrackDetailsForCurrentSession(currentSession);
         updateUI();
     }
@@ -954,6 +1040,7 @@
     }
 
     // 1-second active playback ticker
+    let tickCounter = 0;
     setInterval(() => {
         if (!currentSession) {
             const raw = extractRawSpotifyMetadata();
@@ -983,25 +1070,42 @@
 
         const currentProgressMs = Spicetify.Player.getProgress() || 0;
 
-        // Detect Repeat-One replay: if already scrobbled (or listened > 30s) and player looped back near 0:00
+        // Detect Repeat-One replay: if already scrobbled (or listened > 25s) and player looped back near 0:00
         if (
             currentSession.scrobbled &&
             currentSession.lastProgressMs > 25000 &&
             currentProgressMs < 4000
         ) {
-            startNewTrackSession();
+            startNewTrackSession({ forceFresh: true });
             return;
         }
+
+        const seekDelta = Math.abs(currentProgressMs - currentSession.lastProgressMs);
         currentSession.lastProgressMs = currentProgressMs;
 
-        if (!Spicetify.Player.isPlaying()) {
-            return;
+        // Sync progress if user seeked / passed minutes on the timeline
+        if (settings.syncSeekProgress && currentProgressMs > currentSession.listenedMs) {
+            currentSession.listenedMs = currentProgressMs;
+            if (seekDelta > 2500) {
+                persistCurrentSessionProgress();
+            }
         }
 
-        currentSession.listenedMs += 1000;
+        const isPlaying = Spicetify.Player.isPlaying();
+        if (isPlaying) {
+            currentSession.listenedMs = Math.max(
+                currentSession.listenedMs + 1000,
+                settings.syncSeekProgress ? currentProgressMs : 0
+            );
+            tickCounter++;
+            if (tickCounter % 3 === 0) {
+                persistCurrentSessionProgress();
+            }
+        }
 
-        // Send Now Playing after 3 seconds of active listening (avoids rapid skip spam)
+        // Send Now Playing after 3 seconds of progress (avoids rapid skip spam)
         if (
+            isPlaying &&
             settings.enabled &&
             !currentSession.nowPlayingSent &&
             currentSession.listenedMs >= 3000
@@ -1009,7 +1113,7 @@
             sendNowPlayingForCurrentSession(currentSession);
         }
 
-        // Check scrobble threshold
+        // Check scrobble threshold (triggers whether reached via normal play or passing minutes on seek bar)
         if (
             settings.enabled &&
             !currentSession.scrobbled &&
@@ -1029,11 +1133,17 @@
     }, 1000);
 
     Spicetify.Player.addEventListener('songchange', () => {
+        persistCurrentSessionProgress();
         setTimeout(() => startNewTrackSession(), 150);
     });
 
     Spicetify.Player.addEventListener('onplaypause', () => {
+        persistCurrentSessionProgress();
         updatePlaybarPill();
+    });
+
+    window.addEventListener('beforeunload', () => {
+        persistCurrentSessionProgress();
     });
 
     window.addEventListener('online', () => {
@@ -2651,6 +2761,20 @@
                 </div>
                 <div class="sfm-toggle-row">
                     <div class="sfm-toggle-label">
+                        <strong>Save & Resume Progress on Pause / Skip / Restart</strong>
+                        <span>Remembers how much of each song you already listened to if you pause, switch songs, or reopen Spotify</span>
+                    </div>
+                    <input type="checkbox" id="sfm-chk-save-progress" ${settings.saveTrackProgress ? 'checked' : ''} />
+                </div>
+                <div class="sfm-toggle-row">
+                    <div class="sfm-toggle-label">
+                        <strong>Sync Progress with Seek Bar (Pass Minutes)</strong>
+                        <span>Updates scrobble progress when you scrub/skip ahead on the track timeline</span>
+                    </div>
+                    <input type="checkbox" id="sfm-chk-sync-seek" ${settings.syncSeekProgress ? 'checked' : ''} />
+                </div>
+                <div class="sfm-toggle-row">
+                    <div class="sfm-toggle-label">
                         <strong>Send "Now Playing" Notifications</strong>
                         <span>Update your live "Scrobbling now" status on Last.fm when a song starts</span>
                     </div>
@@ -2777,6 +2901,8 @@
         };
 
         bindCheckbox('#sfm-chk-enabled', 'enabled');
+        bindCheckbox('#sfm-chk-save-progress', 'saveTrackProgress');
+        bindCheckbox('#sfm-chk-sync-seek', 'syncSeekProgress');
         bindCheckbox('#sfm-chk-nowplaying', 'sendNowPlaying');
         bindCheckbox('#sfm-chk-local', 'scrobbleLocalFiles', true);
         bindCheckbox('#sfm-chk-podcasts', 'scrobblePodcasts', true);
