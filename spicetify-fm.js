@@ -1028,7 +1028,12 @@
         let initialCancelled = false;
         let initialStartedAt = Math.floor(Date.now() / 1000);
 
-        if (!forceFresh && settings.saveTrackProgress && progressKey && savedProgressMap[progressKey]) {
+        if (forceFresh && progressKey && savedProgressMap[progressKey]) {
+            delete savedProgressMap[progressKey];
+            try {
+                localStorage.setItem(STORAGE_KEYS.trackProgress, JSON.stringify(savedProgressMap));
+            } catch {}
+        } else if (!forceFresh && settings.saveTrackProgress && progressKey && savedProgressMap[progressKey]) {
             const saved = savedProgressMap[progressKey];
             const ageMs = Date.now() - (saved.updatedAt || 0);
             const maxAgeMs = 24 * 60 * 60 * 1000; // 24 hours
@@ -1139,11 +1144,10 @@
 
         const currentProgressMs = Spicetify.Player.getProgress() || 0;
 
-        // Detect Repeat-One replay: if already scrobbled (or listened > 25s) and player looped back near 0:00
+        // Detect track restart / replay (clicking Back |<< button to 0:00, dragging to 0:00, or Repeat-One loop)
         if (
-            currentSession.scrobbled &&
-            currentSession.lastProgressMs > 25000 &&
-            currentProgressMs < 4000
+            (currentSession.lastProgressMs > 3500 || (currentSession.maxPositionMs || 0) > 3500) &&
+            currentProgressMs < 2500
         ) {
             startNewTrackSession({ forceFresh: true });
             return;
@@ -1209,8 +1213,16 @@
     }, 1000);
 
     Spicetify.Player.addEventListener('songchange', () => {
-        persistCurrentSessionProgress();
-        setTimeout(() => startNewTrackSession(), 150);
+        const prevKey = getTrackProgressKey(currentSession);
+        setTimeout(() => {
+            const nextRaw = extractRawSpotifyMetadata();
+            const nextKey = getTrackProgressKey(nextRaw);
+            const isSameSongRestart = Boolean(prevKey && nextKey && prevKey === nextKey);
+            if (!isSameSongRestart) {
+                persistCurrentSessionProgress();
+            }
+            startNewTrackSession({ forceFresh: isSameSongRestart });
+        }, 150);
     });
 
     Spicetify.Player.addEventListener('onplaypause', () => {
