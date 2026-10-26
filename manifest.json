@@ -1,0 +1,22 @@
+[
+  {
+    "name": "SpicetifyFM (Last.fm Scrobbler)",
+    "description": "A pure in-app Last.fm scrobbler inspired by Pano Scrobbler — zero third-party apps or external servers required. Features serverless Desktop Web Auth, Playbar status pill with personal track scrobble counts, saved per-track metadata edits, Regex & Remastered/Deluxe cleaners, artist/track blocklists, Local Files support, and an offline retry queue.",
+    "preview": "preview.png",
+    "main": "spicetify-fm.js",
+    "readme": "README.md",
+    "authors": [
+      { "name": "rtZenith", "url": "https://github.com/rtZenith" }
+    ],
+    "tags": [
+      "lastfm",
+      "scrobbler",
+      "pano-scrobbler",
+      "metadata",
+      "regex",
+      "local-files",
+      "stats",
+      "playbar"
+    ]
+  }
+]

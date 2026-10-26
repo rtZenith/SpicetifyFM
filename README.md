@@ -1,0 +1,77 @@
+# SpicetifyFM — In-App Last.fm Scrobbler for Spicetify
+
+[![GitHub stars](https://img.shields.io/github/stars/rtZenith/SpicetifyFM?style=for-the-badge&logo=github&color=d92323)](https://github.com/rtZenith/SpicetifyFM/stargazers)
+[![Last.fm API](https://img.shields.io/badge/Last.fm-In--App%20Scrobbler-d92323?style=for-the-badge&logo=last.fm)](https://www.last.fm/api)
+
+A pure **in-app Last.fm scrobbler** extension for Spicetify, inspired by **[Pano Scrobbler](https://github.com/kawaiiDango/pano-scrobbler)** — requiring **zero third-party desktop apps, browser extensions, or external servers**.
+
+Unlike Spotify's native server-side Last.fm connection (which frequently disconnects, ignores Local Files, and gives no visual feedback or metadata control), **SpicetifyFM** communicates directly with Last.fm's official API (`https://ws.audioscrobbler.com/2.0/`) inside the Spotify client.
+
+---
+
+## ✨ Features
+
+- **🔐 Serverless Desktop Web Auth Flow**: Connect your Last.fm account directly in-app (`auth.getToken` → click **"Yes, allow access"** on Last.fm → automatic in-app `auth.getSession` detection). No callback server or password entry required.
+- **📊 Live Topbar & Playbar Status Pill + Personal Playcounts**:
+  - Shows live scrobble progress (`0%` → `100%` → `Scrobbled ✓`), `Queued`, or `Blocked` status right in the Spotify top bar and bottom player bar.
+  - Displays your **personal Last.fm scrobble count** for the currently playing track.
+  - One-click **Love / Unlove ❤️** button on the playbar and in the dashboard.
+  - Quick keyboard shortcut: press **`Alt + L`** anywhere in Spotify to open or close the SpicetifyFM dashboard.
+- **✏️ Pano Scrobbler-Style Saved Metadata Edits**:
+  - Edit the **Track Title**, **Artist**, **Album**, or **Album Artist** of any song directly in the **Now Playing** tab.
+  - Edits are saved in `localStorage` and automatically applied every time that song plays again!
+- **🧹 Preset & Custom Regex Cleaners**:
+  - Built-in toggles to strip `- Remastered 2011`, `(Deluxe Edition)`, `(Expanded Edition)`, `- Single`, and `(feat. ...)` tags.
+  - **First Artist Only** mode: scrobble only the primary artist instead of combined multi-artist strings.
+  - **Custom Regex Rules**: Define custom JavaScript regular expression find-and-replace rules for `track`, `artist`, `album`, or `all` fields.
+- **🚫 Artist & Track Blocklist**:
+  - Block specific tracks or artists (e.g., white noise, sleep tracks, study mixes) from ever scrobbling to your profile.
+- **📁 Local Files & Repeat-One Support**:
+  - Scrobbles local MP3/FLAC files (`spotify:local:...`) and accurately detects Repeat-One replays.
+- **📡 Offline Queue & Auto-Retry**:
+  - Automatically queues scrobbles in `localStorage` if you go offline or Last.fm is temporarily unreachable, and flushes them in batches when back online.
+
+---
+
+## 🚀 Installation
+
+### One-Line PowerShell Install (Windows)
+
+```powershell
+Invoke-WebRequest -UseBasicParsing "https://raw.githubusercontent.com/rtZenith/SpicetifyFM/main/spicetify-fm.js" -OutFile "$env:APPDATA\spicetify\Extensions\spicetify-fm.js"; spicetify config extensions spicetify-fm.js; spicetify apply
+```
+
+### From Spicetify Marketplace
+
+1. Open Spotify
+2. Go to **Marketplace**
+3. Search for **"SpicetifyFM (Last.fm Scrobbler)"**
+4. Click **Install**
+
+### Manual Installation
+
+1. Download [`spicetify-fm.js`](https://raw.githubusercontent.com/rtZenith/SpicetifyFM/main/spicetify-fm.js)
+2. Copy to your Spicetify Extensions folder:
+   - **Windows:** `%appdata%\spicetify\Extensions\`
+   - **macOS/Linux:** `~/.config/spicetify/Extensions/`
+3. Run:
+   ```bash
+   spicetify config extensions spicetify-fm.js
+   spicetify apply
+   ```
+
+---
+
+## 🔑 Getting Your Free Last.fm API Key (Takes 10 Seconds)
+
+Because SpicetifyFM runs 100% locally in your Spotify app with no middleman server:
+1. Click the **Last.fm (`Connect`) pill** in Spotify's top bar or bottom player bar (or press **`Alt + L`**) → go to **Settings & Account**.
+2. Click **"Get a free Last.fm API Key (takes 10s)"** (opens [last.fm/api/account/create](https://www.last.fm/api/account/create)).
+3. Enter any Application Name (e.g. `SpicetifyFM`) and leave Callback URL blank.
+4. Paste your **API Key** and **Shared Secret** into SpicetifyFM and click **"Connect with Last.fm (Web Auth)"**.
+5. Click **"Yes, allow access"** in your browser — SpicetifyFM will automatically detect the session within 3 seconds!
+
+---
+
+## ⚠️ Important Tip
+If you previously enabled Spotify's built-in Last.fm connection in your Last.fm settings ([last.fm/settings/applications](https://www.last.fm/settings/applications)), **disconnect "Spotify Scrobbling"** there so Spotify's servers don't double-scrobble alongside SpicetifyFM.
