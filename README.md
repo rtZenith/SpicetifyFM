@@ -4,6 +4,7 @@
 
 # SpicetifyFM — In-App Last.fm Scrobbler for Spicetify
 
+[![GitHub release (latest by date)](https://img.shields.io/github/v/release/rtZenith/SpicetifyFM?style=for-the-badge&logo=github&color=ff5c39)](https://github.com/rtZenith/SpicetifyFM/releases/latest)
 [![GitHub stars](https://img.shields.io/github/stars/rtZenith/SpicetifyFM?style=for-the-badge&logo=github&color=d92323)](https://github.com/rtZenith/SpicetifyFM/stargazers)
 [![Last.fm API](https://img.shields.io/badge/Last.fm-In--App%20Scrobbler-d92323?style=for-the-badge&logo=last.fm)](https://www.last.fm/api)
 [![License: MIT OR GPL-3.0](https://img.shields.io/badge/License-MIT%20OR%20GPL--3.0-1ed760?style=for-the-badge)](LICENSE)
@@ -57,10 +58,10 @@ Invoke-WebRequest -UseBasicParsing "https://raw.githubusercontent.com/rtZenith/S
 3. Search for **"SpicetifyFM (Last.fm Scrobbler)"**
 4. Click **Install**
 
-### Manual Installation
+### Manual Installation (GitHub Releases)
 
-1. Download [`spicetify-fm.js`](https://raw.githubusercontent.com/rtZenith/SpicetifyFM/main/spicetify-fm.js)
-2. Copy to your Spicetify Extensions folder:
+1. Go to **[Releases](https://github.com/rtZenith/SpicetifyFM/releases/latest)** and download **`spicetify-fm.js`** (or `SpicetifyFM-v1.0.0.zip`)
+2. Copy `spicetify-fm.js` to your Spicetify Extensions folder:
    - **Windows:** `%appdata%\spicetify\Extensions\`
    - **macOS/Linux:** `~/.config/spicetify/Extensions/`
 3. Run:
