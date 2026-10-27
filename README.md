@@ -3,12 +3,16 @@
 [![GitHub stars](https://img.shields.io/github/stars/rtZenith/SpicetifyFM?style=for-the-badge&logo=github&color=d92323)](https://github.com/rtZenith/SpicetifyFM/stargazers)
 [![Last.fm API](https://img.shields.io/badge/Last.fm-In--App%20Scrobbler-d92323?style=for-the-badge&logo=last.fm)](https://www.last.fm/api)
 [![License: MIT OR GPL-3.0](https://img.shields.io/badge/License-MIT%20OR%20GPL--3.0-1ed760?style=for-the-badge)](LICENSE)
+[![Ko-fi](https://img.shields.io/badge/Ko--fi-Support%20Me-FF5E5B?style=for-the-badge&logo=ko-fi&logoColor=white)](https://ko-fi.com/saadrt)
+[![Patreon](https://img.shields.io/badge/Patreon-Support%20Me-F96854?style=for-the-badge&logo=patreon&logoColor=white)](https://www.patreon.com/c/SaadRT)
 
 A pure **in-app Last.fm scrobbler** extension for Spicetify, inspired by **[Pano Scrobbler](https://github.com/kawaiiDango/pano-scrobbler)** — requiring **zero third-party desktop apps, browser extensions, or external servers**.
 
 Unlike Spotify's native server-side Last.fm connection (which frequently disconnects, ignores Local Files, and gives no visual feedback or metadata control), **SpicetifyFM** communicates directly with Last.fm's official API (`https://ws.audioscrobbler.com/2.0/`) inside the Spotify client.
 
-![SpicetifyFM Preview](preview.png)
+![SpicetifyFM Banner](preview.png)
+
+![SpicetifyFM Live UI](screenshot.png)
 
 ---
 
@@ -78,3 +82,13 @@ Because SpicetifyFM runs 100% locally in your Spotify app with no middleman serv
 
 ## ⚠️ Important Tip
 If you previously enabled Spotify's built-in Last.fm connection in your Last.fm settings ([last.fm/settings/applications](https://www.last.fm/settings/applications)), **disconnect "Spotify Scrobbling"** there so Spotify's servers don't double-scrobble alongside SpicetifyFM.
+
+---
+
+## 💖 Support the Project
+
+If you enjoy **SpicetifyFM** and want to support future updates and Spicetify plugins:
+
+- ☕ **Ko-fi:** [https://ko-fi.com/saadrt](https://ko-fi.com/saadrt)
+- 🧡 **Patreon:** [https://www.patreon.com/c/SaadRT](https://www.patreon.com/c/SaadRT)
+
