@@ -3048,6 +3048,45 @@
     updatePlaybarPill();
     startNewTrackSession();
 
+    // Clear stale Marketplace session/IndexedDB cache if preview path changed
+    try {
+        window.sessionStorage?.removeItem('rtZenith-SpicetifyFM');
+        const mktKey = 'marketplace:installed:rtZenith/SpicetifyFM/spicetify-fm.js';
+        const newImgUrl = 'https://raw.githubusercontent.com/rtZenith/SpicetifyFM/main/assets/SPICETIFYFM.png';
+        const rawLocal = window.localStorage?.getItem(mktKey);
+        if (rawLocal) {
+            const parsed = JSON.parse(rawLocal);
+            if (parsed && parsed.imageURL !== newImgUrl) {
+                parsed.imageURL = newImgUrl;
+                if (parsed.manifest) parsed.manifest.preview = 'assets/SPICETIFYFM.png';
+                window.localStorage.setItem(mktKey, JSON.stringify(parsed));
+            }
+        }
+        if (window.indexedDB) {
+            const req = window.indexedDB.open('spicetify-marketplace');
+            req.onsuccess = () => {
+                try {
+                    const db = req.result;
+                    if (!db.objectStoreNames.contains('settings')) return;
+                    const tx = db.transaction('settings', 'readwrite');
+                    const store = tx.objectStore('settings');
+                    const getReq = store.get(mktKey);
+                    getReq.onsuccess = () => {
+                        const row = getReq.result;
+                        if (row && typeof row.value === 'string') {
+                            const parsed = JSON.parse(row.value);
+                            if (parsed && parsed.imageURL !== newImgUrl) {
+                                parsed.imageURL = newImgUrl;
+                                if (parsed.manifest) parsed.manifest.preview = 'assets/SPICETIFYFM.png';
+                                store.put({ key: mktKey, value: JSON.stringify(parsed) });
+                            }
+                        }
+                    };
+                } catch (_) {}
+            };
+        }
+    } catch (_) {}
+
     // Refresh user profile stats & flush any pending offline queue on startup
     if (isAuthenticated()) {
         LastFmApi.getUserInfo(settings.username)
