@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/SPICETIFYFM-BANNER.png" alt="SpicetifyFM banner">
+</p>
+
 # SpicetifyFM — In-App Last.fm Scrobbler for Spicetify
 
 [![GitHub stars](https://img.shields.io/github/stars/rtZenith/SpicetifyFM?style=for-the-badge&logo=github&color=d92323)](https://github.com/rtZenith/SpicetifyFM/stargazers)
@@ -10,9 +14,7 @@ A pure **in-app Last.fm scrobbler** extension for Spicetify, inspired by **[Pano
 
 Unlike Spotify's native server-side Last.fm connection (which frequently disconnects, ignores Local Files, and gives no visual feedback or metadata control), **SpicetifyFM** communicates directly with Last.fm's official API (`https://ws.audioscrobbler.com/2.0/`) inside the Spotify client.
 
-![SpicetifyFM Banner](preview.png)
-
-![SpicetifyFM Live UI](screenshot.png)
+![SpicetifyFM Live UI](assets/screenshot.png)
 
 ---
 
