@@ -4,7 +4,7 @@
 
 # SpicetifyFM — In-App Last.fm Scrobbler for Spicetify
 
-[![GitHub release (latest by date)](https://img.shields.io/github/v/release/rtZenith/SpicetifyFM?style=for-the-badge&logo=github&color=ff5c39)](https://github.com/rtZenith/SpicetifyFM/releases/latest)
+[![GitHub release (latest by date)](https://img.shields.io/github/v/release/rtZenith/SpicetifyFM?style=for-the-badge&logo=github&color=ff5c39&sort=semver)](https://github.com/rtZenith/SpicetifyFM/releases/latest)
 [![GitHub stars](https://img.shields.io/github/stars/rtZenith/SpicetifyFM?style=for-the-badge&logo=github&color=d92323)](https://github.com/rtZenith/SpicetifyFM/stargazers)
 [![Last.fm API](https://img.shields.io/badge/Last.fm-In--App%20Scrobbler-d92323?style=for-the-badge&logo=last.fm)](https://www.last.fm/api)
 [![License: MIT OR GPL-3.0](https://img.shields.io/badge/License-MIT%20OR%20GPL--3.0-1ed760?style=for-the-badge)](LICENSE)
