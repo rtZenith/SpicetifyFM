@@ -1,8 +1,8 @@
 [
   {
     "name": "SpicetifyFM (Last.fm Scrobbler)",
-    "version": "1.0.1",
-    "description": "A pure in-app Last.fm scrobbler inspired by Pano Scrobbler — zero third-party apps or external servers required. Features native tracklist SCROBBLE column in playlists & liked songs, bottom-left Now Playing scrobble count badge, serverless Desktop Web Auth, saved per-track metadata edits, Regex & Remastered/Deluxe cleaners, artist/track blocklists, Local Files support, and an offline retry queue.",
+    "version": "1.0.2",
+    "description": "A pure in-app Last.fm scrobbler inspired by Pano Scrobbler — zero third-party apps or external servers required. Features in-tracklist scrobble badges beside artist names, total artist scrobbles in artist headers, bottom-left Now Playing scrobble count badge, serverless Desktop Web Auth, saved per-track metadata edits, Regex & Remastered/Deluxe cleaners, artist/track blocklists, Local Files support, and an offline retry queue.",
     "preview": "assets/SPICETIFYFM.png",
     "main": "spicetify-fm.js",
     "readme": "README.md",

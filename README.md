@@ -21,10 +21,14 @@ Unlike Spotify's native server-side Last.fm connection (which frequently disconn
 
 ## ✨ Features
 
-- **🎵 Native Tracklist "SCROBBLE" Column**:
-  - Displays your personal Last.fm scrobble count for every song right between **Title** and **Album** in playlists, **Liked Songs**, and album views!
-  - Fully virtualized with zero scrolling lag using local **IndexedDB** caching.
-  - Automatically updates the count immediately whenever a track finishes scrobbling!
+- **🎵 Tracklist Scrobble Badges Beside Artist Name**:
+  - Displays a compact, vibrant Last.fm red scrobble badge right beside the artist's name for every song in playlists, **Liked Songs**, and album views!
+  - Non-intrusive, compact hitbox with instant click-to-open directly on Last.fm (`https://www.last.fm/music/<artist>/_/<track>`).
+  - Zero CSS grid modification: 100% compatible with other extensions (e.g. **Producers**) and works seamlessly in both **List** and **Compact** view modes.
+  - Fully virtualized with zero scrolling lag using local **IndexedDB** caching and automatic on-demand playcount fetching.
+- **🎤 Total Artist Scrobbles in Header**:
+  - Displays your total Last.fm scrobbles for any artist right next to their monthly listeners count in artist headers!
+  - Automatically filters Spotify SEO tags and links directly to the artist's Last.fm profile.
 - **🎧 Bottom-Left Now Playing Scrobble Count Badge**:
   - Displays your exact Last.fm playcount for the currently playing track right next to the song title, artist, and Like/Add button in the bottom player bar.
   - One-click access to open the SpicetifyFM dashboard.
@@ -65,7 +69,7 @@ Invoke-WebRequest -UseBasicParsing "https://raw.githubusercontent.com/rtZenith/S
 
 ### Manual Installation (GitHub Releases)
 
-1. Go to **[Releases](https://github.com/rtZenith/SpicetifyFM/releases/latest)** and download **`spicetify-fm.js`** (or `SpicetifyFM-v1.0.1.zip`)
+1. Go to **[Releases](https://github.com/rtZenith/SpicetifyFM/releases/latest)** and download **`spicetify-fm.js`** (or `SpicetifyFM-v1.0.2.zip`)
 2. Copy `spicetify-fm.js` to your Spicetify Extensions folder:
    - **Windows:** `%appdata%\spicetify\Extensions\`
    - **macOS/Linux:** `~/.config/spicetify/Extensions/`

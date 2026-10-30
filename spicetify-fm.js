@@ -1,7 +1,7 @@
-// SpicetifyFM v1.0.1 - In-App Last.fm Scrobbler for Spicetify
+// SpicetifyFM v1.0.2 - In-App Last.fm Scrobbler for Spicetify
 // Pure in-app Last.fm scrobbler inspired by Pano Scrobbler — zero third-party apps or external servers required.
-// Features: Serverless Desktop Web Auth, UTF-8 MD5 Signing, Tracklist SCROBBLE Column, Now Playing Scrobble Badge,
-// Saved Per-Track Metadata Edits, Preset & Custom Regex Cleaners, Artist/Track Blocklist, Local Files Support, and Offline Queue.
+// Features: Serverless Desktop Web Auth, UTF-8 MD5 Signing, Tracklist Scrobble Badges Beside Artist Name, Artist Total Scrobbles,
+// Now Playing Scrobble Badge, Saved Per-Track Edits, Regex Cleaners, Artist/Track Blocklist, and Offline Queue.
 
 (async function SpicetifyFM() {
     while (!Spicetify?.Player || !Spicetify?.Platform || !document.body) {
@@ -39,7 +39,8 @@
         scrobblePodcasts: false,
         showPlaybarPill: false,      // Bottom-right pill removed as requested
         showNowPlayingBadge: true,  // Bottom-left scrobble count badge next to track title/like
-        showTracklistScrobbles: true, // SCROBBLE column in playlist and album tracklists
+        showTracklistScrobbles: true, // SCROBBLE pill in playlist and album tracklists
+        showArtistTotalScrobbles: true, // Total artist scrobbles badge next to monthly listeners
         showNotifications: false,
         lastLibrarySyncTs: 0,
 
@@ -65,12 +66,14 @@
     settings.showPlaybarPill = false;
     if (settings.showNowPlayingBadge === undefined) settings.showNowPlayingBadge = true;
     if (settings.showTracklistScrobbles === undefined) settings.showTracklistScrobbles = true;
+    if (settings.showArtistTotalScrobbles === undefined) settings.showArtistTotalScrobbles = true;
 
     // Track playcounts cache & library sync
     const DB_NAME = 'spicetifyfm-library';
     const DB_STORE = 'track_plays';
     let dbInstance = null;
     const trackPlaysCache = new Map(); // normalized "artist::track" -> playcount (number)
+    const artistPlaysCache = new Map(); // normalized "artist" -> total playcount (number)
     let isSyncingLibrary = false;
     let tracklistRepaintScheduled = false;
 
@@ -455,6 +458,20 @@
             }
             const data = await lastFmRequest(params, { signed: false, method: 'GET' });
             return data?.track || null;
+        },
+
+        async getArtistInfo(artist) {
+            if (!settings.apiKey?.trim() || !artist) return null;
+            const params = {
+                method: 'artist.getInfo',
+                artist,
+                autocorrect: '0',
+            };
+            if (settings.username) {
+                params.username = settings.username.trim();
+            }
+            const data = await lastFmRequest(params, { signed: false, method: 'GET' });
+            return data?.artist || null;
         },
 
         async setTrackLove({ artist, track, loved }) {
@@ -883,6 +900,16 @@
                 session.userPlaycount = (trackPlaysCache.get(normalizeEditKey(session.artist, session.track)) || 0) + 1;
             }
             saveTrackPlay(session.artist, session.track, session.userPlaycount);
+
+            const normArtist = normalizeArtistKey(session.artist);
+            if (artistPlaysCache.has(normArtist)) {
+                const updated = artistPlaysCache.get(normArtist) + 1;
+                artistPlaysCache.set(normArtist, updated);
+                const headerPill = document.querySelector('.sfm-artist-total-pill');
+                if (headerPill && headerPill.dataset.artist === normArtist) {
+                    headerPill.textContent = updated.toLocaleString();
+                }
+            }
 
             if (settings.userTotalPlaycount > 0) {
                 settings.userTotalPlaycount += 1;
@@ -1390,9 +1417,12 @@
     };
 
     function injectStyles() {
-        if (document.getElementById('spicetify-fm-styles')) return;
-        const style = document.createElement('style');
-        style.id = 'spicetify-fm-styles';
+        let style = document.getElementById('spicetify-fm-styles');
+        if (!style) {
+            style = document.createElement('style');
+            style.id = 'spicetify-fm-styles';
+            document.head.appendChild(style);
+        }
         style.textContent = `
             .spicetify-fm-pill-wrapper {
                 display: inline-flex;
@@ -1474,45 +1504,35 @@
             .spicetify-fm-np-badge {
                 display: inline-flex;
                 align-items: center;
-                gap: 5px;
-                height: 26px;
+                justify-content: center;
+                height: 24px;
                 padding: 0 9px;
                 margin-inline-start: 6px;
                 background: rgba(255, 255, 255, 0.08);
-                border: 1px solid rgba(255, 255, 255, 0.12);
-                border-radius: 13px;
+                border: 1px solid rgba(255, 255, 255, 0.14);
+                border-radius: 12px;
                 color: #fff;
                 cursor: pointer;
                 transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
                 font-size: 11.5px;
-                font-weight: 600;
+                font-weight: 700;
                 font-variant-numeric: tabular-nums;
                 user-select: none;
+                outline: none;
+                box-sizing: border-box;
+                white-space: nowrap;
             }
             .spicetify-fm-np-badge:hover {
-                background: rgba(255, 255, 255, 0.18);
-                border-color: rgba(255, 255, 255, 0.28);
-                transform: scale(1.05);
+                background: rgba(255, 255, 255, 0.2);
+                border-color: rgba(255, 255, 255, 0.35);
+                transform: scale(1.06);
             }
-            .spicetify-fm-np-badge .sfm-np-icon {
-                display: inline-flex;
-                align-items: center;
-                justify-content: center;
-                width: 14px;
-                height: 14px;
-                color: #ef4444;
-            }
-            .spicetify-fm-np-badge .sfm-np-icon svg {
-                width: 100%;
-                height: 100%;
-                fill: currentColor;
+            .spicetify-fm-np-badge:active {
+                transform: scale(0.96);
             }
             .spicetify-fm-np-badge.state-scrobbled {
                 border-color: rgba(34, 197, 94, 0.45);
                 background: rgba(34, 197, 94, 0.16);
-                color: #4ade80;
-            }
-            .spicetify-fm-np-badge.state-scrobbled .sfm-np-icon {
                 color: #4ade80;
             }
             .spicetify-fm-np-badge.state-blocked {
@@ -1521,42 +1541,100 @@
                 color: #f87171;
             }
 
-            /* Tracklist SCROBBLE Column */
-            .sfm-scrobble-cell {
-                display: flex;
-                align-items: center;
-                justify-content: flex-end;
-                padding-inline-end: 22px;
-                color: var(--spice-subtext, #b3b3b3);
-                font-variant-numeric: tabular-nums;
-                font-size: 13px;
-                user-select: none;
-                box-sizing: border-box;
+            /* Song Row Scrobble Pill (Without logo, links to Last.fm) */
+            /* Song Track Scrobble Badge Beside Artist Name (Small Hitbox, Colored Number) */
+            .sfm-scrobble-tag {
+                display: inline-flex !important;
+                align-items: center !important;
+                justify-content: center !important;
+                height: 16px !important;
+                min-width: 16px !important;
+                padding: 0 4px !important;
+                margin-left: 6px !important;
+                margin-right: 2px !important;
+                background: rgba(227, 27, 35, 0.18) !important;
+                border: 1px solid rgba(227, 27, 35, 0.45) !important;
+                border-radius: 8px !important;
+                color: #ff5252 !important;
+                cursor: pointer !important;
+                transition: transform 0.12s ease, background 0.12s ease, border-color 0.12s ease, color 0.12s ease !important;
+                font-size: 10px !important;
+                font-weight: 700 !important;
+                font-variant-numeric: tabular-nums !important;
+                user-select: none !important;
+                outline: none !important;
+                box-sizing: border-box !important;
+                white-space: nowrap !important;
+                font-family: inherit !important;
+                flex-shrink: 0 !important;
+                line-height: 1 !important;
+                vertical-align: middle !important;
+                text-decoration: none !important;
+                pointer-events: auto !important;
+                z-index: 2 !important;
+                position: relative !important;
             }
-            .sfm-scrobble-cell.has-plays {
-                color: var(--spice-text, #fff);
-                font-weight: 500;
+            .sfm-scrobble-tag:hover {
+                background: #e31b23 !important;
+                border-color: #e31b23 !important;
+                color: #ffffff !important;
+                transform: scale(1.08) !important;
             }
-            .sfm-column-head {
-                display: flex !important;
-                align-items: center;
-                justify-content: flex-end !important;
-                background: none !important;
-                padding-inline-end: 22px !important;
-                box-sizing: border-box;
+            .sfm-scrobble-tag:active {
+                transform: scale(0.95) !important;
             }
-            .sfm-column-head > div {
-                display: flex;
-                justify-content: flex-end;
-                width: 100%;
-                background: none;
+            .sfm-scrobble-tag.state-zero {
+                color: rgba(255, 255, 255, 0.5) !important;
+                background: rgba(255, 255, 255, 0.06) !important;
+                border: 1px solid rgba(255, 255, 255, 0.14) !important;
             }
-            .sfm-column-head span {
-                background: none;
-                color: inherit;
-                font-size: 11.5px;
-                letter-spacing: 0.1em;
-                font-weight: 700;
+            .sfm-scrobble-tag.state-zero:hover {
+                color: #ffffff !important;
+                background: rgba(255, 255, 255, 0.18) !important;
+                border-color: rgba(255, 255, 255, 0.3) !important;
+            }
+
+            /* Prevent Spotify from clipping the scrobble badge inside the artist line */
+            .main-trackList-rowSubTitle,
+            span[data-encore-id="text"]:has(.sfm-scrobble-tag),
+            .standalone-ellipsis-one-line:has(.sfm-scrobble-tag) {
+                display: inline-flex !important;
+                align-items: center !important;
+                overflow: visible !important;
+                max-width: 100% !important;
+            }
+
+            /* Artist Page Total Scrobbles Pill */
+            .sfm-artist-total-pill {
+                display: inline-flex !important;
+                align-items: center !important;
+                justify-content: center !important;
+                height: 24px !important;
+                padding: 0 10px !important;
+                margin-inline-start: 10px !important;
+                background: rgba(255, 255, 255, 0.08) !important;
+                border: 1px solid rgba(255, 255, 255, 0.14) !important;
+                border-radius: 12px !important;
+                color: #ffffff !important;
+                cursor: pointer !important;
+                transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1) !important;
+                font-size: 12px !important;
+                font-weight: 700 !important;
+                font-variant-numeric: tabular-nums !important;
+                user-select: none !important;
+                outline: none !important;
+                box-sizing: border-box !important;
+                white-space: nowrap !important;
+                vertical-align: middle !important;
+                font-family: inherit !important;
+            }
+            .sfm-artist-total-pill:hover {
+                background: rgba(255, 255, 255, 0.2) !important;
+                border-color: rgba(255, 255, 255, 0.35) !important;
+                transform: scale(1.06) !important;
+            }
+            .sfm-artist-total-pill:active {
+                transform: scale(0.96) !important;
             }
 
             /* Modal Styles */
@@ -1852,6 +1930,32 @@
                 text-decoration: underline;
                 cursor: pointer;
             }
+            .sfm-api-guide-btn {
+                display: inline-flex !important;
+                align-items: center !important;
+                gap: 5px !important;
+                padding: 4px 11px !important;
+                background: rgba(227, 27, 35, 0.16) !important;
+                border: 1px solid rgba(227, 27, 35, 0.45) !important;
+                border-radius: 9999px !important;
+                color: #ff5252 !important;
+                font-size: 11.5px !important;
+                font-weight: 700 !important;
+                text-decoration: none !important;
+                cursor: pointer !important;
+                transition: all 0.18s ease !important;
+                user-select: none !important;
+            }
+            .sfm-api-guide-btn:hover {
+                background: #e31b23 !important;
+                border-color: #e31b23 !important;
+                color: #ffffff !important;
+                transform: scale(1.04) !important;
+                box-shadow: 0 4px 12px rgba(227, 27, 35, 0.35) !important;
+            }
+            .sfm-api-guide-btn:active {
+                transform: scale(0.97) !important;
+            }
         `;
         document.head.appendChild(style);
     }
@@ -1983,9 +2087,21 @@
                 npScrobbleBadgeEl = document.createElement('button');
                 npScrobbleBadgeEl.id = 'spicetify-fm-np-badge';
                 npScrobbleBadgeEl.className = 'spicetify-fm-np-badge';
+                npScrobbleBadgeEl.type = 'button';
                 npScrobbleBadgeEl.addEventListener('click', e => {
                     e.stopPropagation();
-                    openDashboardModal();
+                    e.preventDefault();
+                    if (currentSession?.artist && currentSession?.track) {
+                        const artistEncoded = encodeURIComponent(currentSession.artist).replace(/%20/g, '+');
+                        const trackEncoded = encodeURIComponent(currentSession.track).replace(/%20/g, '+');
+                        const url = currentSession.lastFmUrl || `https://www.last.fm/music/${artistEncoded}/_/${trackEncoded}`;
+                        window.open(url, '_blank');
+                    } else {
+                        openDashboardModal();
+                    }
+                });
+                npScrobbleBadgeEl.addEventListener('mousedown', e => {
+                    e.stopPropagation();
                 });
             }
 
@@ -2018,30 +2134,17 @@
                     : (trackPlaysCache.get(key) ?? null);
 
             const countText = count !== null ? String(count) : '...';
-            let statusIcon = ICONS.lastfm;
             let badgeClass = '';
 
             if (currentSession.scrobbled) {
-                statusIcon = ICONS.check;
                 badgeClass = 'state-scrobbled';
-                el.title = `${count !== null ? count : ''} scrobbles on Last.fm • Scrobbled ✓ (click to open SpicetifyFM)`;
             } else if (currentSession.blocked) {
-                statusIcon = ICONS.block;
                 badgeClass = 'state-blocked';
-                el.title = `Blocked from Last.fm: ${currentSession.blockReason || ''}`;
-            } else {
-                const pct =
-                    currentSession.targetListenMs && Number.isFinite(currentSession.targetListenMs)
-                        ? Math.min(100, Math.floor((currentSession.listenedMs / currentSession.targetListenMs) * 100))
-                        : 0;
-                el.title = `${count !== null ? count : ''} scrobbles on Last.fm • ${pct}% listened (click to open SpicetifyFM)`;
             }
 
             el.className = `spicetify-fm-np-badge ${badgeClass}`;
-            el.innerHTML = `
-                <span class="sfm-np-icon">${statusIcon}</span>
-                <span class="sfm-np-count">${countText}</span>
-            `;
+            el.title = `${count !== null ? count : '0'} scrobbles on Last.fm • Click to view song on Last.fm`;
+            el.innerHTML = `<span class="sfm-np-count">${countText}</span>`;
         } catch (err) {
             console.debug('[SpicetifyFM] Error updating now playing badge content:', err);
         }
@@ -2169,197 +2272,581 @@
         }
     }
 
-    // ==================== TRACKLIST SCROBBLE COLUMN ====================
-    function readTracklistRow(row) {
+    // ==================== ROUTE & VIEW HELPERS ====================
+    function getCurrentUri() {
+        const path = Spicetify.Platform?.History?.location?.pathname || '';
+        if (!path) return null;
+        const segments = path.split('/').filter(Boolean);
+        const albumIndex = segments.indexOf('album');
+        if (albumIndex > -1 && segments[albumIndex + 1]) return `spotify:album:${segments[albumIndex + 1]}`;
+        const artistIndex = segments.indexOf('artist');
+        if (artistIndex > -1 && segments[artistIndex + 1]) return `spotify:artist:${segments[artistIndex + 1]}`;
+        const playlistIndex = segments.indexOf('playlist');
+        if (playlistIndex > -1 && segments[playlistIndex + 1]) return `spotify:playlist:${segments[playlistIndex + 1]}`;
+        const collectionIndex = segments.indexOf('collection');
+        if (collectionIndex > -1) return 'spotify:collection:tracks';
+        return null;
+    }
+
+    function isArtistView() {
+        const path = Spicetify.Platform?.History?.location?.pathname || '';
+        return path.includes('/artist/') || path.startsWith('artist/');
+    }
+
+    function isAlbumView() {
+        const path = Spicetify.Platform?.History?.location?.pathname || '';
+        return path.includes('/album/') || path.startsWith('album/');
+    }
+
+    function isPlaylistView() {
+        const path = Spicetify.Platform?.History?.location?.pathname || '';
+        return path.includes('/playlist/') || path.includes('/collection/') || path.startsWith('playlist/') || path.startsWith('collection/');
+    }
+
+    function isArtistPage(uri) {
+        if (!uri) return false;
+        return (Spicetify?.URI?.isArtist && Spicetify.URI.isArtist(uri)) || uri.startsWith('spotify:artist:');
+    }
+
+    function isAlbumPage(uri) {
+        if (!uri) return false;
+        return (Spicetify?.URI?.isAlbum && Spicetify.URI.isAlbum(uri)) || uri.startsWith('spotify:album:');
+    }
+
+    function isPlaylistPage(uri) {
+        if (!uri) return false;
+        return (Spicetify?.URI?.isPlaylistV1OrV2 && Spicetify.URI.isPlaylistV1OrV2(uri)) || 
+               uri.startsWith('spotify:playlist:') || 
+               uri.startsWith('spotify:collection:');
+    }
+
+    // ==================== ARTIST & ALBUM NAME EXTRACTORS ====================
+    function cleanArtistTitle(str) {
+        if (!str || typeof str !== 'string') return '';
+        let s = str.trim();
+        s = s.replace(/\s*\|\s*Spotify$/i, '')
+             .replace(/\s*[-–—]\s*Spotify$/i, '')
+             .replace(/^Spotify\s*[-–—]\s*/i, '')
+             .replace(/^Listen to\s+/i, '')
+             .replace(/\s+Songs$/i, '')
+             .replace(/\s+on Spotify$/i, '')
+             .trim();
+        return s;
+    }
+
+    function isValidArtistName(str) {
+        if (!str || typeof str !== 'string') return false;
+        const s = str.trim();
+        if (!s || s.length < 2 || s.length > 80) return false;
+        if (/^(?:spotify|your library|home|search|artist|album|playlist|profile|verified by spotify|verified artist|monthly listeners|listeners|following|followers|discography|popular)$/i.test(s)) {
+            return false;
+        }
+        if (/\b(?:verified|listeners|monthly)\b/i.test(s)) {
+            return false;
+        }
+        if (/^listen to\b/i.test(s) || /\bsongs$/i.test(s)) {
+            return false;
+        }
+        return true;
+    }
+
+    function getArtistPageName() {
+        // Priority 1: Semantic heading in main (exact on-screen artist name)
+        const main = document.querySelector('main');
+        if (main) {
+            const headingSelectors = [
+                '[data-testid="entityTitle"]',
+                '[data-testid="entity-title"]',
+                '[data-testid="artist-page"] h1',
+                '[data-testid="entity-header"] h1',
+                '.main-entityHeader-title h1',
+                '.main-entityHeader-title',
+                'h1'
+            ];
+
+            for (const sel of headingSelectors) {
+                const els = main.querySelectorAll(sel);
+                for (const el of els) {
+                    const text = cleanArtistTitle(el.textContent);
+                    if (isValidArtistName(text)) {
+                        return text;
+                    }
+                }
+            }
+
+            // Priority 2: Largest text in entity header
+            const header = main.querySelector('[data-testid="entity-header"], .main-entityHeader-headerText, .main-entityHeader-container, section[data-testid="artist-page"]');
+            if (header) {
+                const candidates = Array.from(header.querySelectorAll('[data-encore-id="text"], span, div')).filter(el => {
+                    if (el.children.length > 0) return false;
+                    const text = cleanArtistTitle(el.textContent);
+                    return isValidArtistName(text);
+                });
+
+                candidates.sort((a, b) => {
+                    const sizeA = parseFloat(window.getComputedStyle(a).fontSize || '0');
+                    const sizeB = parseFloat(window.getComputedStyle(b).fontSize || '0');
+                    return sizeB - sizeA;
+                });
+
+                if (candidates.length > 0) {
+                    const text = cleanArtistTitle(candidates[0].textContent);
+                    if (isValidArtistName(text)) return text;
+                }
+            }
+        }
+
+        // Priority 3: document.title cleaned of Spotify SEO tags
         try {
-            const cells = [...row.querySelectorAll('[role="gridcell"]')];
-            if (cells.length < 2) return null;
+            const docTitle = cleanArtistTitle(document.title || '');
+            if (isValidArtistName(docTitle)) {
+                return docTitle;
+            }
+        } catch (_) {}
 
-            const rawCells = cells.filter(c => !c.classList.contains('sfm-scrobble-cell'));
-            if (rawCells.length < 2) return null;
+        return null;
+    }
 
-            const titleCell = row.querySelector('[role="gridcell"][aria-colindex="2"]') || rawCells[1];
+    function getAlbumArtistName() {
+        const main = document.querySelector('main');
+        if (!main) return '';
+        const creator = main.querySelector('[data-testid="creator-link"], [data-testid="entity-header"] a[href*="/artist/"], .main-entityHeader-subtitle a[href*="/artist/"], a[href^="/artist/"]');
+        const name = cleanArtistTitle(creator?.textContent?.trim() || '');
+        if (isValidArtistName(name)) return name;
+        return '';
+    }
+
+    // ==================== TRACKLIST SCROBBLE ACTION PILL (SEAMLESS IN-ROW ACTION) ====================
+    function formatPillCount(n) {
+        if (typeof n !== 'number' || isNaN(n) || n <= 0) return '-';
+        if (n >= 1000000) return (n / 1000000).toFixed(1).replace(/\.0$/, '') + 'M';
+        if (n >= 10000) return Math.round(n / 1000) + 'k';
+        if (n >= 1000) return (n / 1000).toFixed(1).replace(/\.0$/, '') + 'k';
+        return String(n);
+    }
+
+    const pendingTrackFetches = new Set();
+    const trackFetchQueue = [];
+    let isProcessingTrackFetchQueue = false;
+
+    function queueTrackPlayCountFetch(artist, track) {
+        if (!isAuthenticated() || !artist || !track) return;
+        const key = normalizeEditKey(artist, track);
+        if (trackPlaysCache.has(key) || pendingTrackFetches.has(key)) return;
+        pendingTrackFetches.add(key);
+        trackFetchQueue.push({ artist, track, key });
+        processTrackFetchQueue();
+    }
+
+    async function processTrackFetchQueue() {
+        if (isProcessingTrackFetchQueue || trackFetchQueue.length === 0) return;
+        isProcessingTrackFetchQueue = true;
+        while (trackFetchQueue.length > 0) {
+            const item = trackFetchQueue.shift();
+            try {
+                const data = await LastFmApi.getTrackInfo({ artist: item.artist, track: item.track });
+                const plays = Number(data?.userplaycount) || 0;
+                saveTrackPlay(item.artist, item.track, plays);
+            } catch (_) {
+                trackPlaysCache.set(item.key, 0);
+                requestTracklistRepaint();
+            }
+            if (trackFetchQueue.length > 0) {
+                await new Promise(r => setTimeout(r, 200));
+            }
+        }
+        isProcessingTrackFetchQueue = false;
+    }
+
+    function readTrackInfo(row) {
+        try {
+            if (row.classList.contains('main-trackList-skeleton') || 
+                row.closest('.main-trackList-skeleton') ||
+                row.querySelector('[data-testid="skeleton"]')) {
+                return null;
+            }
+
+            const titleCell = row.querySelector('.main-trackList-rowSectionStart') ||
+                              row.querySelector('[role="gridcell"][aria-colindex="2"]') ||
+                              row.querySelectorAll('[role="gridcell"]')[1];
             if (!titleCell) return null;
 
-            // ONLY genuine Spotify track rows have div[data-encore-id="text"] inside titleCell
-            const titleNode = titleCell.querySelector('div[data-encore-id="text"]');
+            let titleNode = titleCell.querySelector('a[data-testid="internal-track-link"], a[href*="/track/"], .main-trackList-rowTitle');
+            if (!titleNode) {
+                const textNodes = Array.from(titleCell.querySelectorAll('div[data-encore-id="text"], .standalone-ellipsis-one-line, span'));
+                titleNode = textNodes.find(n => {
+                    const t = n.textContent?.trim() || '';
+                    return t && t !== 'E' && t !== 'Explicit' && !/^\d+$/.test(t);
+                });
+            }
             if (!titleNode) return null;
 
-            const title = titleNode.textContent.trim();
-            const artistLink = titleCell.querySelector('a[href^="/artist/"]');
-            const artist = (artistLink?.textContent || '').trim();
-            if (!title || !artist) return null;
+            let title = titleNode.textContent.trim();
+            if (!title || /^Track \d+$/i.test(title)) return null;
 
-            const durationCell = rawCells[rawCells.length - 1];
-            if (!durationCell) return null;
+            // In List view, artist link is inside titleCell.
+            // In Compact view, artist link is in its own column inside the row.
+            const artistLink = titleCell.querySelector('a[href^="/artist/"], a[href*="/artist/"]') ||
+                               row.querySelector('a[href^="/artist/"], a[href*="/artist/"]');
+            let artist = (artistLink?.textContent || '').trim();
 
-            // Duration cell MUST have encore text
-            const siblingText = durationCell.querySelector('[data-encore-id="text"]');
-            if (!siblingText) return null;
+            if (!artist) {
+                const subTitle = titleCell.querySelector('.main-trackList-rowSubTitle');
+                if (subTitle) {
+                    const text = subTitle.textContent.trim().replace(/^E\s+/, '');
+                    if (text && text !== title) artist = text;
+                }
+            }
 
-            const hasAlbum = rawCells.length > 3 && rawCells.slice(2).some(c => c.querySelector('a[href^="/album/"]'));
-            const albumCell = hasAlbum ? (rawCells.find(c => c.querySelector('a[href^="/album/"]')) || rawCells[2]) : null;
+            if (!artist) {
+                if (isArtistView()) {
+                    artist = getArtistPageName() || '';
+                } else if (isAlbumView()) {
+                    artist = getAlbumArtistName() || '';
+                }
+            }
 
-            return {
-                artist,
-                title,
-                albumCell,
-                durationCell,
-                textClass: siblingText.className || '',
-            };
+            if (!artist || !title) return null;
+
+            return { artist, title };
         } catch (_) {
             return null;
         }
     }
 
-    function ensureColumns(grid) {
+    function populateScrobbleTag(row) {
         try {
-            const template = grid.style.getPropertyValue('--grid-template-columns');
-            if (!template || !template.includes('[last]')) return false;
-            if (template.includes('[sfmScrobbles]')) return true;
-
-            // In playlist / liked songs views with Album column ([var1]), insert before [var1]
-            if (template.includes('[var1]')) {
-                grid.style.setProperty(
-                    '--grid-template-columns',
-                    template.replace('[var1]', '[sfmScrobbles] minmax(75px, 0.65fr) [var1]')
-                );
-                return true;
-            } else {
-                // In views without Album column (e.g. album view), insert before [last]
-                grid.style.setProperty(
-                    '--grid-template-columns',
-                    template.replace('[last]', '[sfmScrobbles] minmax(75px, 0.65fr) [last]')
-                );
-                return true;
-            }
-        } catch (_) {
-            return false;
-        }
-    }
-
-    function ensureHeader(grid) {
-        try {
-            const headers = [...grid.querySelectorAll('[role="columnheader"]')];
-            if (!headers.length || headers.some(h => h.classList.contains('sfm-column-head'))) {
+            // STRICT GUARD: Must be inside main, NEVER in sidebar or nav
+            if (!row || !row.closest('main') || row.closest('nav, aside, .Root__nav-bar, [data-testid="left-sidebar"], [aria-label*="Library"]')) {
                 return;
             }
 
-            const template = grid.style.getPropertyValue('--grid-template-columns');
-            const hasVar1 = template && template.includes('[var1]');
-
-            const model = headers.find(h => h.querySelector('span[data-encore-id="text"]')) || headers[headers.length - 1];
-
-            const sfmHeader = document.createElement('div');
-            sfmHeader.className = `${model.className} sfm-column-head`;
-            sfmHeader.setAttribute('role', 'columnheader');
-            sfmHeader.setAttribute('aria-sort', 'none');
-            sfmHeader.tabIndex = -1;
-
-            const inner = document.createElement('div');
-            const text = document.createElement('span');
-            const modelText = model.querySelector('span[data-encore-id="text"]');
-            text.className = modelText ? modelText.className : '';
-            text.setAttribute('data-encore-id', 'text');
-            text.textContent = 'SCROBBLE';
-            inner.appendChild(text);
-            sfmHeader.appendChild(inner);
-
-            if (hasVar1 && headers.length > 2) {
-                const albumHeader = headers.find(h => /album/i.test(h.textContent || '')) || headers[2];
-                albumHeader.before(sfmHeader);
-            } else {
-                headers[headers.length - 1].before(sfmHeader);
+            // Must NOT be a columnheader or presentation row
+            if (row.querySelector('[role="columnheader"]') || row.getAttribute('role') === 'columnheader') {
+                return;
             }
-        } catch (err) {
-            console.debug('[SpicetifyFM] Error ensuring header:', err);
-        }
-    }
 
-    function decorateRow(row) {
-        try {
-            const info = readTracklistRow(row);
-            if (!info) return;
+            // Remove any legacy end-section pills if present
+            row.querySelectorAll('.sfm-scrobble-pill').forEach(p => p.remove());
+
+            // Locate title cell (Column 2 in both List and Compact mode)
+            const titleCell = row.querySelector('.main-trackList-rowSectionStart') ||
+                              row.querySelector('[role="gridcell"][aria-colindex="2"]') ||
+                              row.querySelectorAll('[role="gridcell"]')[1];
+            if (!titleCell) return;
+
+            // Find the artist element to place the badge directly beside it
+            // Priority 1: The last artist link in titleCell (List mode) or row (Compact mode)
+            // Priority 2: Subtitle text container (e.g. unlinked artists)
+            // Priority 3: Title element (for single-artist album views where artist is omitted from rows)
+            const artistLinks = (titleCell.querySelectorAll('a[href*="/artist/"]').length > 0)
+                ? titleCell.querySelectorAll('a[href*="/artist/"]')
+                : row.querySelectorAll('a[href*="/artist/"]');
+            const subTitle = titleCell.querySelector('.main-trackList-rowSubTitle, [data-encore-id="text"]:not(:first-child)');
+            const titleNode = titleCell.querySelector('a[data-testid="internal-track-link"], a[href*="/track/"], .main-trackList-rowTitle');
+            const lastArtistLink = (artistLinks.length > 0 ? artistLinks[artistLinks.length - 1] : null);
+            const anchor = lastArtistLink || subTitle || titleNode;
+            if (!anchor) return;
+
+            // Ensure parent container displays as inline-flex and allows visible overflow
+            const parent = anchor.parentElement;
+            if (parent) {
+                parent.style.setProperty('display', 'inline-flex', 'important');
+                parent.style.setProperty('align-items', 'center', 'important');
+                parent.style.setProperty('overflow', 'visible', 'important');
+                parent.style.setProperty('max-width', '100%', 'important');
+            }
+
+            row.dataset.sfmTag = '1';
+
+            let badge = row.querySelector('.sfm-scrobble-tag');
+            if (!badge) {
+                badge = document.createElement('span');
+                badge.className = 'sfm-scrobble-tag';
+                badge.setAttribute('role', 'button');
+                badge.tabIndex = 0;
+                badge.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    e.stopImmediatePropagation();
+                    e.preventDefault();
+                    const currentInfo = readTrackInfo(row);
+                    if (currentInfo?.artist && currentInfo?.title) {
+                        const artistEncoded = encodeURIComponent(currentInfo.artist).replace(/%20/g, '+');
+                        const trackEncoded = encodeURIComponent(currentInfo.title).replace(/%20/g, '+');
+                        window.open(`https://www.last.fm/music/${artistEncoded}/_/${trackEncoded}`, '_blank');
+                    }
+                });
+                badge.addEventListener('mousedown', (e) => e.stopPropagation());
+                badge.addEventListener('dblclick', (e) => {
+                    e.stopPropagation();
+                    e.preventDefault();
+                });
+                badge.addEventListener('keydown', (e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault();
+                        badge.click();
+                    }
+                });
+            }
+
+            // POSITIONING: Beside the artist name (immediately after anchor)
+            if (badge.previousElementSibling !== anchor) {
+                anchor.after(badge);
+            }
+
+            const info = readTrackInfo(row);
+            if (!info) {
+                badge.textContent = '-';
+                badge.title = 'Track info loading...';
+                badge.classList.add('state-zero');
+                return;
+            }
 
             const key = normalizeEditKey(info.artist, info.title);
             const count = trackPlaysCache.get(key);
-
             const stamp = `${key}|${count !== undefined ? count : -1}`;
-            if (row.dataset.sfmStamp === stamp && row.querySelector('.sfm-scrobble-cell')) {
+
+            if (row.dataset.sfmStamp === stamp && badge.textContent && badge.textContent !== '...') {
                 return;
             }
             row.dataset.sfmStamp = stamp;
 
-            let scrobbleCell = row.querySelector('.sfm-scrobble-cell');
-            if (!scrobbleCell) {
-                scrobbleCell = document.createElement('div');
-                scrobbleCell.className = 'sfm-scrobble-cell';
-                scrobbleCell.setAttribute('role', 'gridcell');
-
-                const insertTarget = info.albumCell || info.durationCell;
-                if (!insertTarget) return;
-                insertTarget.before(scrobbleCell);
-            }
-
-            let textSpan = scrobbleCell.querySelector('span');
-            if (!textSpan) {
-                textSpan = document.createElement('span');
-                scrobbleCell.appendChild(textSpan);
-            }
-            textSpan.className = info.textClass;
-
             if (count !== undefined && count > 0) {
-                textSpan.textContent = String(count);
-                scrobbleCell.title = `${count} scrobbles on Last.fm`;
-                scrobbleCell.classList.add('has-plays');
+                badge.textContent = formatPillCount(count);
+                badge.title = `${count.toLocaleString()} scrobbles on Last.fm • Click to view song on Last.fm`;
+                badge.classList.remove('state-zero');
             } else if (count === 0) {
-                textSpan.textContent = '-';
-                scrobbleCell.title = '0 scrobbles on Last.fm';
-                scrobbleCell.classList.remove('has-plays');
+                badge.textContent = '-';
+                badge.title = '0 scrobbles on Last.fm • Click to view song on Last.fm';
+                badge.classList.add('state-zero');
             } else {
-                textSpan.textContent = '-';
-                scrobbleCell.title = '0 or unindexed on Last.fm';
-                scrobbleCell.classList.remove('has-plays');
+                badge.textContent = '-';
+                badge.title = 'Click to view song on Last.fm';
+                badge.classList.add('state-zero');
+                queueTrackPlayCountFetch(info.artist, info.title);
             }
         } catch (err) {
-            console.debug('[SpicetifyFM] Error decorating row:', err);
+            console.debug('[SpicetifyFM] Error populating scrobble tag:', err);
         }
     }
 
-    function scanTracklists() {
-        try {
-            if (!isAuthenticated() || !settings.showTracklistScrobbles) return;
+    function updateTracklistScrobbles() {
+        if (!isAuthenticated() || !settings.showTracklistScrobbles) return;
 
-            // Only inspect grids that contain columnheaders (tracklist tables, NOT sidebar)
-            for (const grid of document.querySelectorAll('[role="grid"]')) {
-                if (grid.querySelector('[role="columnheader"]')) {
-                    if (ensureColumns(grid)) {
-                        ensureHeader(grid);
-                    }
+        // Cleanup any accidental legacy pills or sidebar elements
+        document.querySelectorAll('nav .sfm-scrobble-pill, nav .sfm-scrobble-tag, aside .sfm-scrobble-pill, aside .sfm-scrobble-tag, .Root__nav-bar .sfm-scrobble-pill, .Root__nav-bar .sfm-scrobble-tag, [data-testid="left-sidebar"] .sfm-scrobble-pill, [data-testid="left-sidebar"] .sfm-scrobble-tag, [aria-label*="Library"] .sfm-scrobble-pill, [aria-label*="Library"] .sfm-scrobble-tag, .main-trackList-rowSectionEnd .sfm-scrobble-pill').forEach(el => el.remove());
+
+        const main = document.querySelector('main');
+        if (!main) return;
+
+        const allRows = main.querySelectorAll('.main-trackList-trackListRow, [data-testid="tracklist-row"], [role="row"]');
+        for (const row of allRows) {
+            if (row.querySelector('[role="columnheader"]') || row.getAttribute('role') === 'columnheader') continue;
+            populateScrobbleTag(row);
+        }
+    }
+
+    function updateArtistPageHeader() {
+        try {
+            if (!isAuthenticated() || !settings.showArtistTotalScrobbles || !isArtistView()) {
+                const existing = document.querySelector('.sfm-artist-total-pill');
+                if (existing) existing.remove();
+                return;
+            }
+
+            const artistName = getArtistPageName();
+            if (!artistName) return;
+
+            const main = document.querySelector('main');
+            if (!main) return;
+
+            const header = main.querySelector('div.main-entityHeader-headerText') ||
+                           main.querySelector('[data-testid="entity-header"]') ||
+                           main.querySelector('.main-entityHeader-container') ||
+                           main.querySelector('h1')?.parentElement;
+            if (!header) return;
+
+            let targetEl = Array.from(header.querySelectorAll('span, div, p')).find(el => 
+                el.children.length === 0 && /(?:monthly listeners|listeners|auditeurs|oyentes|hörer)/i.test(el.textContent || '')
+            );
+            if (!targetEl) {
+                targetEl = header.querySelector('.main-entityHeader-detailsText') || header.querySelector('h1');
+            }
+            if (!targetEl) return;
+
+            let pill = header.querySelector('.sfm-artist-total-pill');
+            if (!pill) {
+                pill = document.createElement('button');
+                pill.className = 'sfm-artist-total-pill';
+                pill.type = 'button';
+                pill.tabIndex = -1;
+                targetEl.after(pill);
+            } else if (pill.previousElementSibling !== targetEl) {
+                targetEl.after(pill);
+            }
+
+            for (const key of Array.from(artistPlaysCache.keys())) {
+                if (key.includes('listen to') || key.includes('verified') || key.includes('songs')) {
+                    artistPlaysCache.delete(key);
                 }
             }
 
-            for (const row of document.querySelectorAll('div[role="row"][aria-rowindex]')) {
-                decorateRow(row);
+            const normArtist = normalizeArtistKey(artistName);
+            if (pill.dataset.artist === normArtist && pill.textContent && pill.textContent !== '...' && pill.textContent !== '-') {
+                return;
             }
+            pill.dataset.artist = normArtist;
+
+            pill.onclick = (e) => {
+                e.stopPropagation();
+                e.preventDefault();
+                const artistEncoded = encodeURIComponent(artistName).replace(/%20/g, '+');
+                window.open(`https://www.last.fm/music/${artistEncoded}`, '_blank');
+            };
+            pill.onmousedown = (e) => e.stopPropagation();
+
+            // 1. In-memory cache
+            if (artistPlaysCache.has(normArtist)) {
+                const cached = artistPlaysCache.get(normArtist);
+                pill.textContent = cached > 0 ? cached.toLocaleString() : '-';
+                pill.title = `${cached.toLocaleString()} total scrobbles for ${artistName} on Last.fm • Click to view artist on Last.fm`;
+                return;
+            }
+
+            // 2. Immediate local cache from trackPlaysCache
+            let localSum = 0;
+            const prefix = normArtist + '::';
+            for (const [k, count] of trackPlaysCache.entries()) {
+                if (k.startsWith(prefix)) localSum += count;
+            }
+
+            if (localSum > 0) {
+                pill.textContent = localSum.toLocaleString();
+                pill.title = `${localSum.toLocaleString()} scrobbles cached locally • Fetching total from Last.fm...`;
+            } else {
+                pill.textContent = '...';
+                pill.title = `Loading total scrobbles for ${artistName} from Last.fm...`;
+            }
+
+            // 3. Exact userplaycount from Last.fm API
+            LastFmApi.getArtistInfo(artistName).then(data => {
+                if (pill.dataset.artist !== normArtist) return;
+                const userCount = Number(data?.stats?.userplaycount ?? (localSum || 0));
+                artistPlaysCache.set(normArtist, userCount);
+                pill.textContent = userCount > 0 ? userCount.toLocaleString() : (localSum > 0 ? localSum.toLocaleString() : '-');
+                pill.title = `${userCount.toLocaleString()} total scrobbles for ${artistName} on Last.fm • Click to view artist on Last.fm`;
+            }).catch(() => {
+                if (pill.dataset.artist !== normArtist) return;
+                if (localSum > 0) {
+                    pill.textContent = localSum.toLocaleString();
+                } else {
+                    pill.textContent = '-';
+                }
+            });
         } catch (err) {
-            console.debug('[SpicetifyFM] Error scanning tracklists:', err);
+            console.debug('[SpicetifyFM] Error updating artist page header:', err);
         }
     }
 
-    let repaintTimer = null;
+    function cleanupAllTracklists() {
+        try {
+            const artistTotalPill = document.querySelector('.sfm-artist-total-pill');
+            if (artistTotalPill) artistTotalPill.remove();
+
+            // Clean up any stray or legacy badges in sidebar, nav, or rows
+            document.querySelectorAll('.sfm-scrobble-tag, .sfm-scrobble-pill').forEach(el => el.remove());
+            document.querySelectorAll('.sfm-active, [data-sfm-grid]').forEach(el => {
+                el.classList.remove('sfm-active');
+                el.removeAttribute('data-sfm-grid');
+            });
+
+            const styleEl = document.getElementById('sfm-tracklist-grid-styles');
+            if (styleEl) styleEl.remove();
+            const pStyle = document.getElementById('sfm-playlist-grid-style');
+            if (pStyle) pStyle.remove();
+            const aStyle = document.getElementById('sfm-album-grid-style');
+            if (aStyle) aStyle.remove();
+            const artStyle = document.getElementById('sfm-artist-grid-style');
+            if (artStyle) artStyle.remove();
+        } catch (_) {}
+    }
+
+    function updatePageTracklists() {
+        if (!isAuthenticated()) {
+            cleanupAllTracklists();
+            return;
+        }
+
+        if (settings.showTracklistScrobbles) {
+            updateTracklistScrobbles();
+        }
+        if (isArtistView() && settings.showArtistTotalScrobbles) {
+            updateArtistPageHeader();
+        }
+    }
+
+    let lastKnownPath = '';
+    function handleRouteChange() {
+        const currentPath = Spicetify.Platform?.History?.location?.pathname || '';
+        if (currentPath !== lastKnownPath) {
+            lastKnownPath = currentPath;
+            cleanupAllTracklists();
+            for (const row of document.querySelectorAll('[data-sfm-stamp], [data-sfm-tag], [data-sfm-pill]')) {
+                delete row.dataset.sfmStamp;
+                delete row.dataset.sfmTag;
+                delete row.dataset.sfmPill;
+            }
+            updatePageTracklists();
+            setTimeout(updatePageTracklists, 150);
+            setTimeout(updatePageTracklists, 450);
+            setTimeout(updatePageTracklists, 1000);
+        }
+    }
+
+    let pageDebounceTimer = null;
+    function createTracklistMutationHandler() {
+        return (mutations) => {
+            let shouldUpdate = false;
+            for (const mutation of mutations) {
+                if (mutation.target && (
+                    mutation.target.classList?.contains('sfm-scrobble-tag') ||
+                    mutation.target.classList?.contains('sfm-scrobble-pill') ||
+                    mutation.target.classList?.contains('sfm-artist-total-pill') ||
+                    mutation.target.id === 'spicetify-fm-np-badge'
+                )) {
+                    continue;
+                }
+                for (const node of mutation.addedNodes) {
+                    if (node.nodeType === 1) {
+                        if (node.classList?.contains('sfm-scrobble-tag') || node.classList?.contains('sfm-scrobble-pill') || node.classList?.contains('sfm-artist-total-pill')) {
+                            continue;
+                        }
+                        shouldUpdate = true;
+                        break;
+                    }
+                }
+                if (shouldUpdate) break;
+            }
+            if (shouldUpdate) {
+                if (pageDebounceTimer) clearTimeout(pageDebounceTimer);
+                pageDebounceTimer = setTimeout(() => {
+                    pageDebounceTimer = null;
+                    updatePageTracklists();
+                }, 40);
+            }
+        };
+    }
+
     function requestTracklistRepaint(force = false) {
         if (force) {
-            for (const row of document.querySelectorAll('[data-sfm-stamp]')) {
+            for (const row of document.querySelectorAll('[data-sfm-stamp], [data-sfm-tag], [data-sfm-pill]')) {
                 delete row.dataset.sfmStamp;
+                delete row.dataset.sfmTag;
+                delete row.dataset.sfmPill;
             }
         }
-        if (repaintTimer) return;
-        repaintTimer = setTimeout(() => {
-            repaintTimer = null;
-            scanTracklists();
-            decorateNowPlayingBadge();
-        }, 80);
+        updatePageTracklists();
+        decorateNowPlayingBadge();
     }
 
     function ensurePlaybarPill() {
@@ -2374,13 +2861,49 @@
         }
 
         if (!pillObserver && document.body) {
-            pillObserver = new MutationObserver(() => {
-                mountTopbarButton();
-                requestTracklistRepaint();
-            });
+            pillObserver = new MutationObserver(createTracklistMutationHandler());
             pillObserver.observe(document.body, { childList: true, subtree: true });
         }
+
+        try {
+            if (Spicetify?.Platform?.History?.listen && !window._sfmHistoryHooked) {
+                window._sfmHistoryHooked = true;
+                Spicetify.Platform.History.listen(() => {
+                    handleRouteChange();
+                });
+            }
+        } catch (_) {}
+
+        updatePageTracklists();
     }
+
+    // Safety watchdog: ensure newly rendered virtual rows or artist headers are badged
+    setInterval(() => {
+        if (!isAuthenticated()) return;
+        if (settings.showTracklistScrobbles) {
+            const main = document.querySelector('main');
+            if (main) {
+                const rows = main.querySelectorAll('.main-trackList-trackListRow, [data-testid="tracklist-row"]');
+                let needsUpdate = false;
+                for (let i = 0; i < rows.length; i++) {
+                    const r = rows[i];
+                    if (r.querySelector('[role="columnheader"]') || r.getAttribute('role') === 'columnheader') continue;
+                    if (!r.querySelector('.sfm-scrobble-tag')) {
+                        needsUpdate = true;
+                        break;
+                    }
+                }
+                if (needsUpdate) {
+                    updateTracklistScrobbles();
+                }
+            }
+        }
+        if (isArtistView() && settings.showArtistTotalScrobbles) {
+            if (!document.querySelector('.sfm-artist-total-pill')) {
+                updateArtistPageHeader();
+            }
+        }
+    }, 350);
 
     async function toggleCurrentTrackLove() {
         if (!currentSession) return;
@@ -3301,10 +3824,11 @@
 
         container.innerHTML = `
             <div class="sfm-card" style="margin-bottom:12px;">
-                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
+                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px; gap:8px; flex-wrap:wrap;">
                     <strong>1. Last.fm API Credentials & In-App Authentication</strong>
-                    <a class="sfm-link" id="sfm-open-api-create" style="font-size:12px;">
-                        Get a free Last.fm API Key (takes 10s) ↗
+                    <a class="sfm-api-guide-btn" id="sfm-open-api-create" role="button" tabindex="0">
+                        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path><polyline points="15 3 21 3 21 9"></polyline><line x1="10" y1="14" x2="21" y2="3"></line></svg>
+                        <span>Get a free Last.fm API Key (takes 10s) ↗</span>
                     </a>
                 </div>
                 ${authStatusHtml}
@@ -3417,20 +3941,27 @@
             </div>
 
             <div class="sfm-card" style="margin-top:12px;">
-                <strong style="display:block; margin-bottom:8px;">4. Tracklist Columns & Library Playcount Sync</strong>
+                <strong style="display:block; margin-bottom:8px;">4. Tracklist Scrobble Badges & Library Playcount Sync</strong>
                 <div class="sfm-toggle-row">
                     <div class="sfm-toggle-label">
-                        <strong>Show "SCROBBLE" Column in Playlists & Tracklists</strong>
-                        <span>Displays a native SCROBBLE column between Title and Album showing how many times you played each song</span>
+                        <strong>Show Scrobble Count Badges Beside Artist Name</strong>
+                        <span>Displays a vibrant colored scrobble count badge beside the artist name for each song; click directly opens the song on Last.fm</span>
                     </div>
                     <input type="checkbox" id="sfm-chk-tracklist-col" ${settings.showTracklistScrobbles ? 'checked' : ''} />
                 </div>
                 <div class="sfm-toggle-row">
                     <div class="sfm-toggle-label">
                         <strong>Show Scrobble Count Badge in Now Playing Bar</strong>
-                        <span>Displays your scrobble count for the current song in the bottom-left player bar next to the like button</span>
+                        <span>Displays your scrobble count pill for the current song in the bottom-left player bar; click opens the song on Last.fm</span>
                     </div>
                     <input type="checkbox" id="sfm-chk-np-badge" ${settings.showNowPlayingBadge ? 'checked' : ''} />
+                </div>
+                <div class="sfm-toggle-row">
+                    <div class="sfm-toggle-label">
+                        <strong>Show Total Artist Scrobbles Badge</strong>
+                        <span>Displays your total scrobbles badge next to monthly listeners on artist pages</span>
+                    </div>
+                    <input type="checkbox" id="sfm-chk-artist-total" ${settings.showArtistTotalScrobbles ? 'checked' : ''} />
                 </div>
                 <div style="display:flex; justify-content:space-between; align-items:center; margin-top:12px; padding-top:10px; border-top:1px solid rgba(255,255,255,0.08); flex-wrap:wrap; gap:8px;">
                     <div>
@@ -3531,6 +4062,12 @@
             settings.showNowPlayingBadge = e.target.checked;
             saveSettings();
             ensureNowPlayingBadge();
+        });
+
+        container.querySelector('#sfm-chk-artist-total')?.addEventListener('change', e => {
+            settings.showArtistTotalScrobbles = e.target.checked;
+            saveSettings();
+            updateArtistPageHeader();
         });
 
         container.querySelector('#sfm-sync-lib-btn')?.addEventListener('click', async () => {
@@ -3675,5 +4212,5 @@
         }
     }
 
-    console.log('[SpicetifyFM] Loaded In-App Last.fm Scrobbler v1.0.1');
+    console.log('[SpicetifyFM] Loaded In-App Last.fm Scrobbler v1.0.2');
 })();
