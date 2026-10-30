@@ -83,12 +83,36 @@ Invoke-WebRequest -UseBasicParsing "https://raw.githubusercontent.com/rtZenith/S
 
 ## 🔑 Getting Your Free Last.fm API Key (Takes 10 Seconds)
 
-Because SpicetifyFM runs 100% locally in your Spotify app with no middleman server:
-1. Click the **Last.fm (`Connect`) pill** in Spotify's top bar or bottom player bar (or press **`Alt + L`**) → go to **Settings & Account**.
-2. Click **"Get a free Last.fm API Key (takes 10s)"** (opens [last.fm/api/account/create](https://www.last.fm/api/account/create)).
-3. Enter any Application Name (e.g. `SpicetifyFM`) and leave Callback URL blank.
-4. Paste your **API Key** and **Shared Secret** into SpicetifyFM and click **"Connect with Last.fm (Web Auth)"**.
-5. Click **"Yes, allow access"** in your browser — SpicetifyFM will automatically detect the session within 3 seconds!
+SpicetifyFM runs 100% client-side inside your Spotify app with zero third-party servers:
+1. Open SpicetifyFM settings (press **`Alt + L`** or click the Last.fm pill in the top bar).
+2. Click the prominent **`Get a free Last.fm API Key (takes 10s) ↗`** button right at the top of the Settings modal (opens [last.fm/api/account/create](https://www.last.fm/api/account/create)).
+3. On Last.fm's developer page, enter any Application Name (e.g. `SpicetifyFM`) and leave the Callback URL blank.
+4. Copy and paste your **API Key** and **Shared Secret** into SpicetifyFM, then click **Save Keys**.
+5. Click **"Connect with Last.fm (Web Auth)"** and click **"Yes, allow access"** in your browser — SpicetifyFM will automatically detect the authorization in seconds!
+
+---
+
+## 📋 Changelog
+
+### v1.0.2
+- **Tracklist Artist Scrobble Badges**:
+  - Replaced the full-column injection with a compact, vibrant Last.fm red badge placed directly next to the artist's name (`[Artist Name] [18]`).
+  - Small, non-intrusive hitbox with one-click direct access to the song's Last.fm page.
+  - Zero CSS grid modification: 100% compatible with other extensions (e.g. **Producers**) and works in both **Compact** and **List** view modes.
+- **Total Artist Scrobbles in Artist Header**:
+  - Added your personal all-time scrobbles for any artist right next to their monthly listeners count on artist profile pages.
+  - Smart name cleaner removes Spotify SEO prefixes (`"Verified by Spotify"`, `"Listen to..."`).
+- **Prominent API Key Button**:
+  - Transformed the "Get a free Last.fm API Key" link in settings into a high-visibility styled button with an external-link icon.
+- **Performance & React Safety**:
+  - Strictly scoped DOM queries to the main view to prevent any interference with sidebar navigation, `Liked Songs`, or React DOM reconciliation.
+
+### v1.0.1
+- Added tracklist scrobble counts and bottom-left player bar now-playing scrobble badge.
+- Added virtualized IndexedDB playcount caching.
+
+### v1.0.0
+- Initial release: serverless desktop web auth, real-time scrobbler, saved metadata edits, regex cleaners, and offline queue.
 
 ---
 
