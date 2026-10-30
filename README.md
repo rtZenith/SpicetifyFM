@@ -31,7 +31,7 @@ Unlike Spotify's native server-side Last.fm connection (which frequently disconn
   - Automatically filters Spotify SEO tags and links directly to the artist's Last.fm profile.
 
 <p align="center">
-  <img src="assets/artist-scrobbles-preview.png" alt="Tracklist Scrobble Badges & Total Artist Scrobbles in SpicetifyFM" width="850">
+  <img src="assets/artist-scrobbles-preview.gif" alt="Tracklist Scrobble Badges & Total Artist Scrobbles in SpicetifyFM" width="850">
 </p>
 
 - **🎧 Bottom-Left Now Playing Scrobble Count Badge**:
