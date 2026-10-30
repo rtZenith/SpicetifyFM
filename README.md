@@ -29,6 +29,10 @@ Unlike Spotify's native server-side Last.fm connection (which frequently disconn
 - **🎤 Total Artist Scrobbles in Header**:
   - Displays your total Last.fm scrobbles for any artist right next to their monthly listeners count in artist headers!
   - Automatically filters Spotify SEO tags and links directly to the artist's Last.fm profile.
+
+<p align="center">
+  <img src="assets/artist-scrobbles-preview.png" alt="Tracklist Scrobble Badges & Total Artist Scrobbles in SpicetifyFM" width="850">
+</p>
 - **🎧 Bottom-Left Now Playing Scrobble Count Badge**:
   - Displays your exact Last.fm playcount for the currently playing track right next to the song title, artist, and Like/Add button in the bottom player bar.
   - One-click access to open the SpicetifyFM dashboard.
