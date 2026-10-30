@@ -1959,86 +1959,92 @@
     // ==================== NOW PLAYING SCROBBLE BADGE (BOTTOM-LEFT) ====================
     let npScrobbleBadgeEl = null;
 
-    function ensureNowPlayingBadge() {
-        if (!isAuthenticated() || !settings.showNowPlayingBadge) {
-            if (npScrobbleBadgeEl) {
-                npScrobbleBadgeEl.remove();
-                npScrobbleBadgeEl = null;
+    function decorateNowPlayingBadge() {
+        try {
+            if (!isAuthenticated() || !settings.showNowPlayingBadge) {
+                if (npScrobbleBadgeEl) {
+                    npScrobbleBadgeEl.remove();
+                    npScrobbleBadgeEl = null;
+                }
+                return;
             }
-            return;
-        }
 
-        const widget = document.querySelector('[data-testid="now-playing-widget"]');
-        if (!widget) return;
+            const bar = document.querySelector('[data-testid="now-playing-widget"]');
+            if (!bar) return;
 
-        if (!npScrobbleBadgeEl) {
-            npScrobbleBadgeEl = document.createElement('button');
-            npScrobbleBadgeEl.id = 'spicetify-fm-np-badge';
-            npScrobbleBadgeEl.className = 'spicetify-fm-np-badge';
-            npScrobbleBadgeEl.addEventListener('click', e => {
-                e.stopPropagation();
-                openDashboardModal();
-            });
-        }
+            // Look for the plus or heart button
+            const plus = [...bar.querySelectorAll('button')].find(b =>
+                /add to playlist|save to your library|liked songs|like/i.test(b.getAttribute('aria-label') || '')
+            );
+            // CRITICAL: If plus button is not rendered yet, return immediately (never append to bar)
+            if (!plus) return;
 
-        if (!npScrobbleBadgeEl.isConnected) {
-            const plusOrHeart =
-                widget.querySelector('[data-testid="add-button"]') ||
-                [...widget.querySelectorAll('button')].find(b =>
-                    /add to playlist|save to your library|liked songs|like/i.test(b.getAttribute('aria-label') || '')
-                );
-
-            if (plusOrHeart?.parentElement) {
-                plusOrHeart.after(npScrobbleBadgeEl);
-            } else {
-                widget.appendChild(npScrobbleBadgeEl);
+            if (!npScrobbleBadgeEl) {
+                npScrobbleBadgeEl = document.createElement('button');
+                npScrobbleBadgeEl.id = 'spicetify-fm-np-badge';
+                npScrobbleBadgeEl.className = 'spicetify-fm-np-badge';
+                npScrobbleBadgeEl.addEventListener('click', e => {
+                    e.stopPropagation();
+                    openDashboardModal();
+                });
             }
-        }
 
-        updateNowPlayingBadgeContent();
+            if (npScrobbleBadgeEl.previousElementSibling !== plus) {
+                plus.after(npScrobbleBadgeEl);
+            }
+
+            updateNowPlayingBadgeContent(npScrobbleBadgeEl);
+        } catch (err) {
+            console.debug('[SpicetifyFM] Error decorating now playing badge:', err);
+        }
     }
 
-    function updateNowPlayingBadgeContent() {
-        if (!npScrobbleBadgeEl || !npScrobbleBadgeEl.isConnected) return;
+    function updateNowPlayingBadgeContent(badge) {
+        try {
+            const el = badge || npScrobbleBadgeEl;
+            if (!el || !el.isConnected) return;
 
-        if (!currentSession) {
-            npScrobbleBadgeEl.style.display = 'none';
-            return;
+            if (!currentSession) {
+                el.style.display = 'none';
+                return;
+            }
+
+            el.style.display = 'inline-flex';
+
+            const key = normalizeEditKey(currentSession.artist, currentSession.track);
+            const count =
+                currentSession.userPlaycount !== null
+                    ? currentSession.userPlaycount
+                    : (trackPlaysCache.get(key) ?? null);
+
+            const countText = count !== null ? String(count) : '...';
+            let statusIcon = ICONS.lastfm;
+            let badgeClass = '';
+
+            if (currentSession.scrobbled) {
+                statusIcon = ICONS.check;
+                badgeClass = 'state-scrobbled';
+                el.title = `${count !== null ? count : ''} scrobbles on Last.fm • Scrobbled ✓ (click to open SpicetifyFM)`;
+            } else if (currentSession.blocked) {
+                statusIcon = ICONS.block;
+                badgeClass = 'state-blocked';
+                el.title = `Blocked from Last.fm: ${currentSession.blockReason || ''}`;
+            } else {
+                const pct =
+                    currentSession.targetListenMs && Number.isFinite(currentSession.targetListenMs)
+                        ? Math.min(100, Math.floor((currentSession.listenedMs / currentSession.targetListenMs) * 100))
+                        : 0;
+                el.title = `${count !== null ? count : ''} scrobbles on Last.fm • ${pct}% listened (click to open SpicetifyFM)`;
+            }
+
+            el.className = `spicetify-fm-np-badge ${badgeClass}`;
+            el.innerHTML = `
+                <span class="sfm-np-icon">${statusIcon}</span>
+                <span class="sfm-np-count">${countText}</span>
+            `;
+        } catch (err) {
+            console.debug('[SpicetifyFM] Error updating now playing badge content:', err);
         }
-
-        npScrobbleBadgeEl.style.display = 'inline-flex';
-
-        const key = normalizeEditKey(currentSession.artist, currentSession.track);
-        const count =
-            currentSession.userPlaycount !== null
-                ? currentSession.userPlaycount
-                : (trackPlaysCache.get(key) ?? null);
-
-        const countText = count !== null ? String(count) : '...';
-        let statusIcon = ICONS.lastfm;
-        let badgeClass = '';
-
-        if (currentSession.scrobbled) {
-            statusIcon = ICONS.check;
-            badgeClass = 'state-scrobbled';
-            npScrobbleBadgeEl.title = `${count !== null ? count : ''} scrobbles on Last.fm • Scrobbled ✓ (click to open SpicetifyFM)`;
-        } else if (currentSession.blocked) {
-            statusIcon = ICONS.block;
-            badgeClass = 'state-blocked';
-            npScrobbleBadgeEl.title = `Blocked from Last.fm: ${currentSession.blockReason || ''}`;
-        } else {
-            const pct =
-                currentSession.targetListenMs && Number.isFinite(currentSession.targetListenMs)
-                    ? Math.min(100, Math.floor((currentSession.listenedMs / currentSession.targetListenMs) * 100))
-                    : 0;
-            npScrobbleBadgeEl.title = `${count !== null ? count : ''} scrobbles on Last.fm • ${pct}% listened (click to open SpicetifyFM)`;
-        }
-
-        npScrobbleBadgeEl.className = `spicetify-fm-np-badge ${badgeClass}`;
-        npScrobbleBadgeEl.innerHTML = `
-            <span class="sfm-np-icon">${statusIcon}</span>
-            <span class="sfm-np-count">${countText}</span>
-        `;
     }
 
     // ==================== LIBRARY CACHE (INDEXEDDB) ====================
@@ -2165,199 +2171,201 @@
 
     // ==================== TRACKLIST SCROBBLE COLUMN ====================
     function readTracklistRow(row) {
-        const cells = [...row.querySelectorAll('[role="gridcell"]')];
-        if (cells.length < 2) return null;
+        try {
+            const cells = [...row.querySelectorAll('[role="gridcell"]')];
+            if (cells.length < 2) return null;
 
-        const rawCells = cells.filter(c => !c.classList.contains('sfm-scrobble-cell'));
-        if (rawCells.length < 2) return null;
+            const rawCells = cells.filter(c => !c.classList.contains('sfm-scrobble-cell'));
+            if (rawCells.length < 2) return null;
 
-        const titleCell = row.querySelector('[role="gridcell"][aria-colindex="2"]') || rawCells[1];
-        if (!titleCell) return null;
+            const titleCell = row.querySelector('[role="gridcell"][aria-colindex="2"]') || rawCells[1];
+            if (!titleCell) return null;
 
-        const titleNode =
-            titleCell.querySelector('div[data-encore-id="text"]') ||
-            titleCell.querySelector('a[href^="/track/"]') ||
-            titleCell.querySelector('span[data-encore-id="text"]') ||
-            titleCell.querySelector('.standalone-ellipsis-one-line');
-        if (!titleNode) return null;
+            // ONLY genuine Spotify track rows have div[data-encore-id="text"] inside titleCell
+            const titleNode = titleCell.querySelector('div[data-encore-id="text"]');
+            if (!titleNode) return null;
 
-        const title = titleNode.textContent.trim();
+            const title = titleNode.textContent.trim();
+            const artistLink = titleCell.querySelector('a[href^="/artist/"]');
+            const artist = (artistLink?.textContent || '').trim();
+            if (!title || !artist) return null;
 
-        const artistLink = titleCell.querySelector('a[href^="/artist/"]');
-        let artist = '';
-        if (artistLink) {
-            artist = artistLink.textContent.trim();
-        } else {
-            const rowLabel = row.getAttribute('aria-label') || '';
-            const byMatch = rowLabel.match(/by\s+(.+)$/i);
-            if (byMatch) {
-                artist = byMatch[1].trim();
-            }
+            const durationCell = rawCells[rawCells.length - 1];
+            if (!durationCell) return null;
+
+            // Duration cell MUST have encore text
+            const siblingText = durationCell.querySelector('[data-encore-id="text"]');
+            if (!siblingText) return null;
+
+            const hasAlbum = rawCells.length > 3 && rawCells.slice(2).some(c => c.querySelector('a[href^="/album/"]'));
+            const albumCell = hasAlbum ? (rawCells.find(c => c.querySelector('a[href^="/album/"]')) || rawCells[2]) : null;
+
+            return {
+                artist,
+                title,
+                albumCell,
+                durationCell,
+                textClass: siblingText.className || '',
+            };
+        } catch (_) {
+            return null;
         }
-
-        if (!title) return null;
-
-        const albumCell = rawCells.slice(2).find(c => c.querySelector('a[href^="/album/"]'));
-        const durationCell = rawCells[rawCells.length - 1];
-
-        const siblingText = durationCell?.querySelector('[data-encore-id="text"]');
-        const textClass = siblingText ? siblingText.className : '';
-
-        return {
-            artist,
-            title,
-            albumCell,
-            durationCell,
-            textClass,
-        };
     }
 
     function ensureColumns(grid) {
-        const template = grid.style.getPropertyValue('--grid-template-columns');
-        if (!template) return false;
-        if (template.includes('[sfmScrobbles]')) return true;
+        try {
+            const template = grid.style.getPropertyValue('--grid-template-columns');
+            if (!template || !template.includes('[last]')) return false;
+            if (template.includes('[sfmScrobbles]')) return true;
 
-        if (template.includes('[var1]')) {
-            grid.style.setProperty(
-                '--grid-template-columns',
-                template.replace('[var1]', '[sfmScrobbles] minmax(75px, 0.65fr) [var1]')
-            );
-            return true;
-        } else if (template.includes('[last]')) {
-            grid.style.setProperty(
-                '--grid-template-columns',
-                template.replace('[last]', '[sfmScrobbles] minmax(75px, 0.65fr) [last]')
-            );
-            return true;
+            // In playlist / liked songs views with Album column ([var1]), insert before [var1]
+            if (template.includes('[var1]')) {
+                grid.style.setProperty(
+                    '--grid-template-columns',
+                    template.replace('[var1]', '[sfmScrobbles] minmax(75px, 0.65fr) [var1]')
+                );
+                return true;
+            } else {
+                // In views without Album column (e.g. album view), insert before [last]
+                grid.style.setProperty(
+                    '--grid-template-columns',
+                    template.replace('[last]', '[sfmScrobbles] minmax(75px, 0.65fr) [last]')
+                );
+                return true;
+            }
+        } catch (_) {
+            return false;
         }
-        return false;
     }
 
     function ensureHeader(grid) {
-        const headers = [...grid.querySelectorAll('[role="columnheader"]')];
-        if (!headers.length || headers.some(h => h.classList.contains('sfm-column-head'))) {
-            return;
-        }
+        try {
+            const headers = [...grid.querySelectorAll('[role="columnheader"]')];
+            if (!headers.length || headers.some(h => h.classList.contains('sfm-column-head'))) {
+                return;
+            }
 
-        const template = grid.style.getPropertyValue('--grid-template-columns');
-        const hasVar1 = template && template.includes('[var1]');
+            const template = grid.style.getPropertyValue('--grid-template-columns');
+            const hasVar1 = template && template.includes('[var1]');
 
-        const model = headers.find(h => h.querySelector('span[data-encore-id="text"]')) || headers[headers.length - 1];
+            const model = headers.find(h => h.querySelector('span[data-encore-id="text"]')) || headers[headers.length - 1];
 
-        const sfmHeader = document.createElement('div');
-        sfmHeader.className = `${model.className} sfm-column-head`;
-        sfmHeader.setAttribute('role', 'columnheader');
-        sfmHeader.setAttribute('aria-sort', 'none');
-        sfmHeader.tabIndex = -1;
+            const sfmHeader = document.createElement('div');
+            sfmHeader.className = `${model.className} sfm-column-head`;
+            sfmHeader.setAttribute('role', 'columnheader');
+            sfmHeader.setAttribute('aria-sort', 'none');
+            sfmHeader.tabIndex = -1;
 
-        const inner = document.createElement('div');
-        const text = document.createElement('span');
-        const modelText = model.querySelector('span[data-encore-id="text"]');
-        text.className = modelText ? modelText.className : '';
-        text.setAttribute('data-encore-id', 'text');
-        text.textContent = 'SCROBBLE';
-        inner.appendChild(text);
-        sfmHeader.appendChild(inner);
+            const inner = document.createElement('div');
+            const text = document.createElement('span');
+            const modelText = model.querySelector('span[data-encore-id="text"]');
+            text.className = modelText ? modelText.className : '';
+            text.setAttribute('data-encore-id', 'text');
+            text.textContent = 'SCROBBLE';
+            inner.appendChild(text);
+            sfmHeader.appendChild(inner);
 
-        if (hasVar1) {
-            const albumHeader = headers.find(h => /album/i.test(h.textContent || '')) || (headers.length > 2 ? headers[2] : null);
-            if (albumHeader) {
+            if (hasVar1 && headers.length > 2) {
+                const albumHeader = headers.find(h => /album/i.test(h.textContent || '')) || headers[2];
                 albumHeader.before(sfmHeader);
             } else {
                 headers[headers.length - 1].before(sfmHeader);
             }
-        } else {
-            headers[headers.length - 1].before(sfmHeader);
+        } catch (err) {
+            console.debug('[SpicetifyFM] Error ensuring header:', err);
         }
-
-        const allHeaders = [...grid.querySelectorAll('[role="columnheader"]')];
-        grid.setAttribute('aria-colcount', String(allHeaders.length));
-        allHeaders.forEach((cell, index) => {
-            cell.setAttribute('aria-colindex', String(index + 1));
-        });
     }
 
     function decorateRow(row) {
-        const info = readTracklistRow(row);
-        if (!info) return;
+        try {
+            const info = readTracklistRow(row);
+            if (!info) return;
 
-        const key = normalizeEditKey(info.artist, info.title);
-        const count = trackPlaysCache.get(key);
+            const key = normalizeEditKey(info.artist, info.title);
+            const count = trackPlaysCache.get(key);
 
-        const stamp = `${key}|${count !== undefined ? count : -1}`;
-        if (row.dataset.sfmStamp === stamp && row.querySelector('.sfm-scrobble-cell')) {
-            return;
-        }
-        row.dataset.sfmStamp = stamp;
-
-        let scrobbleCell = row.querySelector('.sfm-scrobble-cell');
-        if (!scrobbleCell) {
-            scrobbleCell = document.createElement('div');
-            scrobbleCell.className = 'sfm-scrobble-cell';
-            scrobbleCell.setAttribute('role', 'gridcell');
-
-            const insertTarget = info.albumCell || info.durationCell;
-            if (insertTarget) {
-                insertTarget.before(scrobbleCell);
-            } else {
-                row.appendChild(scrobbleCell);
+            const stamp = `${key}|${count !== undefined ? count : -1}`;
+            if (row.dataset.sfmStamp === stamp && row.querySelector('.sfm-scrobble-cell')) {
+                return;
             }
-        }
+            row.dataset.sfmStamp = stamp;
 
-        let textSpan = scrobbleCell.querySelector('span');
-        if (!textSpan) {
-            textSpan = document.createElement('span');
-            scrobbleCell.appendChild(textSpan);
-        }
-        textSpan.className = info.textClass;
+            let scrobbleCell = row.querySelector('.sfm-scrobble-cell');
+            if (!scrobbleCell) {
+                scrobbleCell = document.createElement('div');
+                scrobbleCell.className = 'sfm-scrobble-cell';
+                scrobbleCell.setAttribute('role', 'gridcell');
 
-        if (count !== undefined && count > 0) {
-            textSpan.textContent = String(count);
-            scrobbleCell.title = `${count} scrobbles on Last.fm`;
-            scrobbleCell.classList.add('has-plays');
-        } else if (count === 0) {
-            textSpan.textContent = '-';
-            scrobbleCell.title = '0 scrobbles on Last.fm';
-            scrobbleCell.classList.remove('has-plays');
-        } else {
-            textSpan.textContent = '-';
-            scrobbleCell.title = '0 or unknown scrobbles on Last.fm';
-            scrobbleCell.classList.remove('has-plays');
+                const insertTarget = info.albumCell || info.durationCell;
+                if (!insertTarget) return;
+                insertTarget.before(scrobbleCell);
+            }
+
+            let textSpan = scrobbleCell.querySelector('span');
+            if (!textSpan) {
+                textSpan = document.createElement('span');
+                scrobbleCell.appendChild(textSpan);
+            }
+            textSpan.className = info.textClass;
+
+            if (count !== undefined && count > 0) {
+                textSpan.textContent = String(count);
+                scrobbleCell.title = `${count} scrobbles on Last.fm`;
+                scrobbleCell.classList.add('has-plays');
+            } else if (count === 0) {
+                textSpan.textContent = '-';
+                scrobbleCell.title = '0 scrobbles on Last.fm';
+                scrobbleCell.classList.remove('has-plays');
+            } else {
+                textSpan.textContent = '-';
+                scrobbleCell.title = '0 or unindexed on Last.fm';
+                scrobbleCell.classList.remove('has-plays');
+            }
+        } catch (err) {
+            console.debug('[SpicetifyFM] Error decorating row:', err);
         }
     }
 
     function scanTracklists() {
-        if (!isAuthenticated() || !settings.showTracklistScrobbles) return;
+        try {
+            if (!isAuthenticated() || !settings.showTracklistScrobbles) return;
 
-        for (const grid of document.querySelectorAll('[role="grid"]')) {
-            if (ensureColumns(grid)) {
-                ensureHeader(grid);
+            // Only inspect grids that contain columnheaders (tracklist tables, NOT sidebar)
+            for (const grid of document.querySelectorAll('[role="grid"]')) {
+                if (grid.querySelector('[role="columnheader"]')) {
+                    if (ensureColumns(grid)) {
+                        ensureHeader(grid);
+                    }
+                }
             }
-        }
 
-        for (const row of document.querySelectorAll('div[role="row"][aria-rowindex]')) {
-            decorateRow(row);
+            for (const row of document.querySelectorAll('div[role="row"][aria-rowindex]')) {
+                decorateRow(row);
+            }
+        } catch (err) {
+            console.debug('[SpicetifyFM] Error scanning tracklists:', err);
         }
     }
 
+    let repaintTimer = null;
     function requestTracklistRepaint(force = false) {
         if (force) {
             for (const row of document.querySelectorAll('[data-sfm-stamp]')) {
                 delete row.dataset.sfmStamp;
             }
         }
-        if (tracklistRepaintScheduled) return;
-        tracklistRepaintScheduled = true;
-        setTimeout(() => {
-            tracklistRepaintScheduled = false;
+        if (repaintTimer) return;
+        repaintTimer = setTimeout(() => {
+            repaintTimer = null;
             scanTracklists();
-        }, 50);
+            decorateNowPlayingBadge();
+        }, 80);
     }
 
     function ensurePlaybarPill() {
         injectStyles();
         mountTopbarButton();
-        ensureNowPlayingBadge();
+        decorateNowPlayingBadge();
 
         // Enforce removal of bottom-right pill as requested by user
         if (pillWrapperEl) {
@@ -2368,7 +2376,6 @@
         if (!pillObserver && document.body) {
             pillObserver = new MutationObserver(() => {
                 mountTopbarButton();
-                ensureNowPlayingBadge();
                 requestTracklistRepaint();
             });
             pillObserver.observe(document.body, { childList: true, subtree: true });
