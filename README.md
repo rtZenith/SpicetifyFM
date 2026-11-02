@@ -15,6 +15,7 @@ A pure **in-app Last.fm scrobbler** for Spotify via Spicetify, inspired by **Pan
 
 <p align="center">
   <img src="assets/artist-scrobbles-preview.gif" alt="SpicetifyFM Preview" width="850">
+  <img src="screenshot.png" alt="SpicetifyFM Preview" width="850">
 </p>
 
 ---
