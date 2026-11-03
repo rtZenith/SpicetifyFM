@@ -1,6 +1,7 @@
-// SpicetifyFM v1.0.2 - In-App Last.fm Scrobbler for Spicetify
+// SpicetifyFM v1.0.3 - In-App Last.fm Scrobbler for Spicetify
 // Pure in-app Last.fm scrobbler inspired by Pano Scrobbler — zero third-party apps or external servers required.
-// Features: Serverless Desktop Web Auth, UTF-8 MD5 Signing, Tracklist Scrobble Badges Beside Artist Name, Artist Total Scrobbles,
+// Features: Serverless Desktop Web Auth, UTF-8 MD5 Signing, Tracklist Scrobble Badges Beside Artist Name, Artist & Album Total Scrobbles,
+// Right-Click SpicetifyFM Context Menu, Quick-Edit Metadata Dialog, Spotify Like to Last.fm Loved Auto-Sync,
 // Now Playing Scrobble Badge, Saved Per-Track Edits, Regex Cleaners, Artist/Track Blocklist, and Offline Queue.
 
 (async function SpicetifyFM() {
@@ -15,11 +16,15 @@
         regexRules: 'spicetify_fm_regex_v1',
         blocklist: 'spicetify_fm_blocklist_v1',
         offlineQueue: 'spicetify_fm_queue_v1',
+        listenBrainzQueue: 'spicetify_fm_lb_queue_v1',
         sessionLog: 'spicetify_fm_session_log_v1',
         trackProgress: 'spicetify_fm_progress_v1',
+        streakData: 'spicetify_fm_streak_v1',
+        milestonesHistory: 'spicetify_fm_milestones_v1',
     };
 
     const LASTFM_API_URL = 'https://ws.audioscrobbler.com/2.0/';
+    const LISTENBRAINZ_API_URL = 'https://api.listenbrainz.org/1/';
     const MAX_QUEUE_SIZE = 500;
     const MAX_BATCH_SCROBBLES = 50;
     const MAX_SESSION_LOG = 50;
@@ -33,6 +38,11 @@
         userAvatar: '',
         userTotalPlaycount: 0,
 
+        // ListenBrainz dual-scrobbling
+        enableListenBrainz: false,
+        listenBrainzToken: '',
+        listenBrainzUsername: '',
+
         enabled: true,
         sendNowPlaying: true,
         scrobbleLocalFiles: true,
@@ -41,6 +51,8 @@
         showNowPlayingBadge: true,  // Bottom-left scrobble count badge next to track title/like
         showTracklistScrobbles: true, // SCROBBLE pill in playlist and album tracklists
         showArtistTotalScrobbles: true, // Total artist scrobbles badge next to monthly listeners
+        showAlbumTotalScrobbles: true,  // Total album scrobbles badge in album header
+        syncSpotifyLikesToLoved: false, // Auto-sync Spotify likes to Last.fm loved tracks
         showNotifications: false,
         lastLibrarySyncTs: 0,
 
@@ -57,6 +69,11 @@
         cleanRemastered: true,
         cleanDeluxe: true,
         cleanFeatFromTitle: false,
+
+        // Gamification, Streaks & Milestones
+        enableMilestones: true,
+        enableStreaks: true,
+        dailyGoal: 25,
     };
 
     // ==================== STATE ====================
@@ -67,6 +84,14 @@
     if (settings.showNowPlayingBadge === undefined) settings.showNowPlayingBadge = true;
     if (settings.showTracklistScrobbles === undefined) settings.showTracklistScrobbles = true;
     if (settings.showArtistTotalScrobbles === undefined) settings.showArtistTotalScrobbles = true;
+    if (settings.showAlbumTotalScrobbles === undefined) settings.showAlbumTotalScrobbles = true;
+    if (settings.syncSpotifyLikesToLoved === undefined) settings.syncSpotifyLikesToLoved = false;
+    if (settings.enableListenBrainz === undefined) settings.enableListenBrainz = false;
+    if (settings.listenBrainzToken === undefined) settings.listenBrainzToken = '';
+    if (settings.listenBrainzUsername === undefined) settings.listenBrainzUsername = '';
+    if (settings.enableMilestones === undefined) settings.enableMilestones = true;
+    if (settings.enableStreaks === undefined) settings.enableStreaks = true;
+    if (settings.dailyGoal === undefined) settings.dailyGoal = 25;
 
     // Track playcounts cache & library sync
     const DB_NAME = 'spicetifyfm-library';
@@ -74,6 +99,7 @@
     let dbInstance = null;
     const trackPlaysCache = new Map(); // normalized "artist::track" -> playcount (number)
     const artistPlaysCache = new Map(); // normalized "artist" -> total playcount (number)
+    const albumPlaysCache = new Map();  // normalized "artist:::album" -> total playcount (number)
     let isSyncingLibrary = false;
     let tracklistRepaintScheduled = false;
 
@@ -92,6 +118,11 @@
     // Offline scrobble queue: Array of { artist, track, album, albumArtist, duration, timestamp, queuedAt }
     let offlineQueue = loadJson(STORAGE_KEYS.offlineQueue, []);
     if (!Array.isArray(offlineQueue)) offlineQueue = [];
+    const recentScrobblesCache = new Map(); // "artist:::track" -> unixTimestamp (anti-duplicate guard)
+
+    // ListenBrainz offline queue
+    let listenBrainzQueue = loadJson(STORAGE_KEYS.listenBrainzQueue, []);
+    if (!Array.isArray(listenBrainzQueue)) listenBrainzQueue = [];
 
     // Recent session scrobbles
     let sessionLog = loadJson(STORAGE_KEYS.sessionLog, []);
@@ -100,6 +131,176 @@
     // Saved per-track listening progress across pauses, skips, and restarts
     let savedProgressMap = loadJson(STORAGE_KEYS.trackProgress, {});
     if (!savedProgressMap || typeof savedProgressMap !== 'object') savedProgressMap = {};
+
+    // Gamification & Streaks state
+    const DEFAULT_STREAK = {
+        currentStreak: 0,
+        bestStreak: 0,
+        lastActiveDate: '',
+        todayScrobbles: 0,
+    };
+    let streakData = loadJson(STORAGE_KEYS.streakData, DEFAULT_STREAK);
+    streakData = { ...DEFAULT_STREAK, ...streakData };
+
+    let milestonesHistory = loadJson(STORAGE_KEYS.milestonesHistory, []);
+    if (!Array.isArray(milestonesHistory)) milestonesHistory = [];
+
+    function saveStreakData() {
+        try {
+            localStorage.setItem(STORAGE_KEYS.streakData, JSON.stringify(streakData));
+        } catch (_) {}
+    }
+
+    function saveMilestonesHistory() {
+        try {
+            localStorage.setItem(STORAGE_KEYS.milestonesHistory, JSON.stringify(milestonesHistory.slice(0, 100)));
+        } catch (_) {}
+    }
+
+    function getLocalDateString(d = new Date()) {
+        const year = d.getFullYear();
+        const month = String(d.getMonth() + 1).padStart(2, '0');
+        const day = String(d.getDate()).padStart(2, '0');
+        return `${year}-${month}-${day}`;
+    }
+
+    function getYesterdayDateString() {
+        const d = new Date();
+        d.setDate(d.getDate() - 1);
+        return getLocalDateString(d);
+    }
+
+    function syncStreakDisplay() {
+        const today = getLocalDateString();
+        const yesterday = getYesterdayDateString();
+        if (streakData.lastActiveDate !== today) {
+            streakData.todayScrobbles = 0;
+            if (streakData.lastActiveDate !== yesterday) {
+                streakData.currentStreak = 0;
+            }
+        }
+    }
+
+    function recordScrobbleStreak() {
+        if (!settings.enableStreaks) return;
+        const today = getLocalDateString();
+        const yesterday = getYesterdayDateString();
+
+        if (streakData.lastActiveDate === today) {
+            streakData.todayScrobbles = (streakData.todayScrobbles || 0) + 1;
+        } else if (streakData.lastActiveDate === yesterday) {
+            streakData.currentStreak = (streakData.currentStreak || 0) + 1;
+            streakData.todayScrobbles = 1;
+            streakData.lastActiveDate = today;
+        } else {
+            streakData.currentStreak = 1;
+            streakData.todayScrobbles = 1;
+            streakData.lastActiveDate = today;
+        }
+
+        streakData.bestStreak = Math.max(streakData.bestStreak || 0, streakData.currentStreak);
+        saveStreakData();
+    }
+
+    const TRACK_MILESTONES = [10, 25, 50, 100, 250, 500, 1000];
+    const PROFILE_MILESTONES = [1000, 2000, 3000, 4000, 5000, 6000, 7000, 8000, 9000, 10000, 15000, 20000, 25000, 50000, 100000];
+
+    function checkAndCelebrateMilestones(session) {
+        if (!settings.enableMilestones || !session) return;
+
+        // 1. Check Track Milestones
+        const trackPlays = session.userPlaycount || 0;
+        if (TRACK_MILESTONES.includes(trackPlays)) {
+            const milestoneKey = `track:${session.artist}::${session.track}:${trackPlays}`;
+            const alreadyAchieved = milestonesHistory.some(m => m.id === milestoneKey);
+            if (!alreadyAchieved) {
+                const milestone = {
+                    id: milestoneKey,
+                    type: 'track',
+                    name: `${session.track} • ${session.artist}`,
+                    tier: trackPlays,
+                    date: Date.now()
+                };
+                milestonesHistory.unshift(milestone);
+                saveMilestonesHistory();
+                showMilestoneCelebration({
+                    title: `🎉 ${trackPlays}th Scrobble Milestone!`,
+                    subtitle: `${session.track} — ${session.artist}`,
+                    icon: '🏆'
+                });
+                return;
+            }
+        }
+
+        // 2. Check Profile Milestones
+        const total = settings.userTotalPlaycount || 0;
+        if (PROFILE_MILESTONES.includes(total)) {
+            const milestoneKey = `profile:${total}`;
+            const alreadyAchieved = milestonesHistory.some(m => m.id === milestoneKey);
+            if (!alreadyAchieved) {
+                const milestone = {
+                    id: milestoneKey,
+                    type: 'profile',
+                    name: `${total.toLocaleString()} Total Scrobbles`,
+                    tier: total,
+                    date: Date.now()
+                };
+                milestonesHistory.unshift(milestone);
+                saveMilestonesHistory();
+                showMilestoneCelebration({
+                    title: `👑 ${total.toLocaleString()} Profile Scrobbles!`,
+                    subtitle: 'Huge listening milestone reached on Last.fm',
+                    icon: '👑'
+                });
+            }
+        }
+    }
+
+    function showMilestoneCelebration({ title, subtitle, icon = '🏆' }) {
+        // 1. Golden pulse on bottom-left now-playing badge
+        const badge = document.getElementById('spicetify-fm-np-badge');
+        if (badge) {
+            badge.classList.add('sfm-pulse-gold');
+            setTimeout(() => {
+                badge.classList.remove('sfm-pulse-gold');
+            }, 3500);
+        }
+
+        // 2. Create Floating Milestone Toast
+        const existing = document.getElementById('spicetify-fm-milestone-toast');
+        if (existing) existing.remove();
+
+        const toast = document.createElement('div');
+        toast.id = 'spicetify-fm-milestone-toast';
+        toast.className = 'sfm-milestone-toast';
+        toast.innerHTML = `
+            <div style="font-size:24px; flex-shrink:0;">${escapeHtml(icon)}</div>
+            <div style="flex:1; min-width:0;">
+                <div style="font-weight:700; font-size:13.5px; color:#ffd700; line-height:1.2; margin-bottom:2px;">
+                    ${escapeHtml(title)}
+                </div>
+                <div style="font-size:11.5px; color:rgba(255,255,255,0.7); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">
+                    ${escapeHtml(subtitle)}
+                </div>
+            </div>
+            <div style="color:rgba(255,255,255,0.4); font-size:16px; margin-left:4px;">✕</div>
+        `;
+
+        toast.addEventListener('click', () => {
+            toast.style.animation = 'sfm-toast-out 0.25s forwards';
+            setTimeout(() => toast.remove(), 250);
+            openDashboardModal('charts');
+        });
+
+        document.body.appendChild(toast);
+
+        setTimeout(() => {
+            if (document.body.contains(toast)) {
+                toast.style.animation = 'sfm-toast-out 0.3s forwards';
+                setTimeout(() => toast.remove(), 300);
+            }
+        }, 4500);
+    }
 
     // Active playback tracking state
     let currentSession = null;
@@ -110,6 +311,17 @@
     let isFlushingQueue = false;
     let recentLastFmTracks = null;
     let recentLastFmLoading = false;
+
+    // Charts tab state
+    let chartsState = {
+        category: 'tracks', // 'tracks' | 'artists' | 'albums'
+        period: '7day',     // '7day' | '1month' | '3month' | '12month' | 'overall'
+        loading: false,
+        error: '',
+        data: null
+    };
+    const chartsCache = new Map();
+    const chartImagesCache = new Map();
 
     // ==================== PERSISTENCE HELPERS ====================
     function loadJson(key, fallback) {
@@ -163,6 +375,17 @@
             localStorage.setItem(STORAGE_KEYS.offlineQueue, JSON.stringify(offlineQueue));
         } catch (err) {
             console.error('[SpicetifyFM] Failed saving offline queue:', err);
+        }
+    }
+
+    function saveListenBrainzQueue() {
+        try {
+            if (listenBrainzQueue.length > MAX_QUEUE_SIZE) {
+                listenBrainzQueue = listenBrainzQueue.slice(listenBrainzQueue.length - MAX_QUEUE_SIZE);
+            }
+            localStorage.setItem(STORAGE_KEYS.listenBrainzQueue, JSON.stringify(listenBrainzQueue));
+        } catch (err) {
+            console.error('[SpicetifyFM] Failed saving ListenBrainz queue:', err);
         }
     }
 
@@ -474,6 +697,21 @@
             return data?.artist || null;
         },
 
+        async getAlbumInfo({ artist, album }) {
+            if (!settings.apiKey?.trim() || !artist || !album) return null;
+            const params = {
+                method: 'album.getInfo',
+                artist,
+                album,
+                autocorrect: '0',
+            };
+            if (settings.username) {
+                params.username = settings.username.trim();
+            }
+            const data = await lastFmRequest(params, { signed: false, method: 'GET' });
+            return data?.album || null;
+        },
+
         async setTrackLove({ artist, track, loved }) {
             if (!isAuthenticated()) throw new Error('Connect your Last.fm account first.');
             return lastFmRequest(
@@ -517,6 +755,198 @@
             );
             return data?.toptracks || null;
         },
+
+        async getUserTopTracks({ period = '7day', limit = 25 } = {}) {
+            if (!settings.apiKey?.trim() || !settings.username?.trim()) return [];
+            const data = await lastFmRequest(
+                {
+                    method: 'user.getTopTracks',
+                    user: settings.username.trim(),
+                    period,
+                    limit: String(limit),
+                },
+                { signed: false, method: 'GET' }
+            );
+            const list = data?.toptracks?.track;
+            if (!list) return [];
+            return Array.isArray(list) ? list : [list];
+        },
+
+        async getUserTopArtists({ period = '7day', limit = 25 } = {}) {
+            if (!settings.apiKey?.trim() || !settings.username?.trim()) return [];
+            const data = await lastFmRequest(
+                {
+                    method: 'user.getTopArtists',
+                    user: settings.username.trim(),
+                    period,
+                    limit: String(limit),
+                },
+                { signed: false, method: 'GET' }
+            );
+            const list = data?.topartists?.artist;
+            if (!list) return [];
+            return Array.isArray(list) ? list : [list];
+        },
+
+        async getUserTopAlbums({ period = '7day', limit = 25 } = {}) {
+            if (!settings.apiKey?.trim() || !settings.username?.trim()) return [];
+            const data = await lastFmRequest(
+                {
+                    method: 'user.getTopAlbums',
+                    user: settings.username.trim(),
+                    period,
+                    limit: String(limit),
+                },
+                { signed: false, method: 'GET' }
+            );
+            const list = data?.topalbums?.album;
+            if (!list) return [];
+            return Array.isArray(list) ? list : [list];
+        },
+    };
+
+    // ==================== LISTENBRAINZ API CLIENT ====================
+    const ListenBrainzApi = {
+        isConfigured() {
+            return Boolean(settings.enableListenBrainz && settings.listenBrainzToken?.trim());
+        },
+
+        async validateToken(token) {
+            const cleanToken = (token || '').trim();
+            if (!cleanToken) throw new Error('Token cannot be empty');
+            const res = await fetch(`${LISTENBRAINZ_API_URL}validate-token?token=${encodeURIComponent(cleanToken)}`, {
+                headers: {
+                    'Authorization': `Token ${cleanToken}`,
+                    'User-Agent': 'SpicetifyFM/1.0.3'
+                }
+            });
+            const data = await res.json().catch(() => null);
+            if (!res.ok || !data?.valid) {
+                throw new Error(data?.error || data?.message || 'Invalid ListenBrainz user token');
+            }
+            return data.user_name || '';
+        },
+
+        async submitListen({ artist, track, album, duration, timestamp, spotifyId }) {
+            if (!this.isConfigured()) return null;
+            const token = settings.listenBrainzToken.trim();
+            const payload = {
+                listen_type: 'single',
+                payload: [
+                    {
+                        listened_at: Math.floor(timestamp || Date.now() / 1000),
+                        track_metadata: {
+                            artist_name: artist,
+                            track_name: track,
+                            release_name: album || undefined,
+                            additional_info: {
+                                submission_client: 'SpicetifyFM',
+                                submission_client_version: '1.0.3',
+                                duration_ms: duration ? Math.round(duration * 1000) : undefined,
+                                spotify_id: spotifyId || undefined
+                            }
+                        }
+                    }
+                ]
+            };
+
+            try {
+                const res = await fetch(`${LISTENBRAINZ_API_URL}submit-listens`, {
+                    method: 'POST',
+                    headers: {
+                        'Authorization': `Token ${token}`,
+                        'Content-Type': 'application/json',
+                        'User-Agent': 'SpicetifyFM/1.0.3'
+                    },
+                    body: JSON.stringify(payload)
+                });
+                if (!res.ok) {
+                    throw new Error(`ListenBrainz HTTP ${res.status}`);
+                }
+                return true;
+            } catch (err) {
+                console.warn('[SpicetifyFM] ListenBrainz submit failed, queueing offline:', err.message);
+                listenBrainzQueue.push({
+                    artist, track, album, duration, timestamp, spotifyId, queuedAt: Date.now()
+                });
+                saveListenBrainzQueue();
+                return false;
+            }
+        },
+
+        async updateNowPlaying({ artist, track, album, duration, spotifyId }) {
+            if (!this.isConfigured()) return null;
+            const token = settings.listenBrainzToken.trim();
+            const payload = {
+                listen_type: 'playing_now',
+                payload: [
+                    {
+                        track_metadata: {
+                            artist_name: artist,
+                            track_name: track,
+                            release_name: album || undefined,
+                            additional_info: {
+                                submission_client: 'SpicetifyFM',
+                                submission_client_version: '1.0.3',
+                                duration_ms: duration ? Math.round(duration * 1000) : undefined,
+                                spotify_id: spotifyId || undefined
+                            }
+                        }
+                    }
+                ]
+            };
+
+            try {
+                await fetch(`${LISTENBRAINZ_API_URL}submit-listens`, {
+                    method: 'POST',
+                    headers: {
+                        'Authorization': `Token ${token}`,
+                        'Content-Type': 'application/json',
+                        'User-Agent': 'SpicetifyFM/1.0.3'
+                    },
+                    body: JSON.stringify(payload)
+                });
+            } catch (_) {}
+        },
+
+        async flushQueue() {
+            if (!this.isConfigured() || !listenBrainzQueue.length) return;
+            const token = settings.listenBrainzToken.trim();
+            const toSend = listenBrainzQueue.slice(0, 50);
+            const payload = {
+                listen_type: 'import',
+                payload: toSend.map(item => ({
+                    listened_at: Math.floor(item.timestamp || item.queuedAt / 1000),
+                    track_metadata: {
+                        artist_name: item.artist,
+                        track_name: item.track,
+                        release_name: item.album || undefined,
+                        additional_info: {
+                            submission_client: 'SpicetifyFM',
+                            submission_client_version: '1.0.3',
+                            duration_ms: item.duration ? Math.round(item.duration * 1000) : undefined,
+                            spotify_id: item.spotifyId || undefined
+                        }
+                    }
+                }))
+            };
+
+            try {
+                const res = await fetch(`${LISTENBRAINZ_API_URL}submit-listens`, {
+                    method: 'POST',
+                    headers: {
+                        'Authorization': `Token ${token}`,
+                        'Content-Type': 'application/json',
+                        'User-Agent': 'SpicetifyFM/1.0.3'
+                    },
+                    body: JSON.stringify(payload)
+                });
+                if (res.ok) {
+                    listenBrainzQueue.splice(0, toSend.length);
+                    saveListenBrainzQueue();
+                }
+            } catch (_) {}
+        }
     };
 
     // ==================== PANO SCROBBLER METADATA PIPELINE ====================
@@ -852,6 +1282,15 @@
                 albumArtist: session.albumArtist,
                 duration: session.durationSec,
             });
+            if (ListenBrainzApi.isConfigured()) {
+                ListenBrainzApi.updateNowPlaying({
+                    artist: session.artist,
+                    track: session.track,
+                    album: session.album,
+                    duration: session.durationSec,
+                    spotifyId: session.uri,
+                });
+            }
             updateUI();
         } catch (err) {
             console.warn('[SpicetifyFM] updateNowPlaying error:', err.message || err);
@@ -861,6 +1300,18 @@
     async function triggerScrobble(session, { manual = false } = {}) {
         if (!session || session.scrobbled || session.scrobbling) return;
         if (!manual && (session.blocked || session.cancelled || session.skippedByPolicy)) return;
+
+        // Anti-duplicate protection: prevent the same song from being scrobbled twice within 45s
+        const dedupeKey = `${(session.artist || '').trim().toLowerCase()}:::${(session.track || '').trim().toLowerCase()}`;
+        const lastScrobbledAt = recentScrobblesCache.get(dedupeKey);
+        const nowUnix = Math.floor(Date.now() / 1000);
+        const minGapSec = Math.max(30, Math.min(240, Math.floor((session.durationSec || 180) * 0.5)));
+        if (!manual && lastScrobbledAt && (nowUnix - lastScrobbledAt < minGapSec)) {
+            console.warn('[SpicetifyFM] Blocked duplicate scrobble for:', session.track, `(already scrobbled ${nowUnix - lastScrobbledAt}s ago)`);
+            session.scrobbled = true;
+            session.scrobbling = false;
+            return;
+        }
 
         session.scrobbling = true;
         updateUI();
@@ -879,10 +1330,26 @@
                 throw new Error('Not connected to Last.fm');
             }
             await LastFmApi.scrobbleBatch([scrobblePayload]);
+            recentScrobblesCache.set(dedupeKey, nowUnix);
+
+            if (ListenBrainzApi.isConfigured()) {
+                ListenBrainzApi.submitListen({
+                    artist: session.artist,
+                    track: session.track,
+                    album: session.album,
+                    duration: session.durationSec,
+                    timestamp: session.startedAtUnix || Math.floor(Date.now() / 1000),
+                    spotifyId: session.uri,
+                });
+            }
             session.scrobbled = true;
             session.scrobbling = false;
             session.queuedOffline = false;
-            session.userPlaycount = (session.userPlaycount || 0) + 1;
+
+            // Increment playcount exactly once
+            const currentPlays = session.userPlaycount ?? (trackPlaysCache.get(normalizeEditKey(session.artist, session.track)) || 0);
+            session.userPlaycount = currentPlays + 1;
+            saveTrackPlay(session.artist, session.track, session.userPlaycount);
 
             sessionLog.unshift({
                 ...scrobblePayload,
@@ -893,13 +1360,7 @@
                 rawTrack: session.rawTrack,
             });
             saveSessionLog();
-
-            if (session.userPlaycount !== null) {
-                session.userPlaycount += 1;
-            } else {
-                session.userPlaycount = (trackPlaysCache.get(normalizeEditKey(session.artist, session.track)) || 0) + 1;
-            }
-            saveTrackPlay(session.artist, session.track, session.userPlaycount);
+            persistCurrentSessionProgress();
 
             const normArtist = normalizeArtistKey(session.artist);
             if (artistPlaysCache.has(normArtist)) {
@@ -916,13 +1377,25 @@
                 saveSettings();
             }
 
+            // Gamification: Update daily streak & evaluate milestone celebrations
+            recordScrobbleStreak();
+            checkAndCelebrateMilestones(session);
+
             if (settings.showNotifications || manual) {
                 notify(`Scrobbled: ${session.artist} — ${session.track}`);
             }
 
-            // Also attempt flushing any older offline queue items
+            // Deduplicate offline queue before attempting flush
             if (offlineQueue.length > 0) {
-                flushOfflineQueue();
+                const trackKey = `${session.artist.toLowerCase()}:::${session.track.toLowerCase()}`;
+                offlineQueue = offlineQueue.filter(item => {
+                    const itemKey = `${(item.artist || '').toLowerCase()}:::${(item.track || '').toLowerCase()}`;
+                    return !(itemKey === trackKey && Math.abs(item.timestamp - scrobblePayload.timestamp) < 600);
+                });
+                saveOfflineQueue();
+                if (offlineQueue.length > 0) {
+                    flushOfflineQueue();
+                }
             }
         } catch (err) {
             console.warn('[SpicetifyFM] Scrobble failed, queueing offline:', err.message || err);
@@ -1304,6 +1777,9 @@
         if (offlineQueue.length > 0) {
             flushOfflineQueue();
         }
+        if (listenBrainzQueue.length > 0) {
+            ListenBrainzApi.flushQueue();
+        }
     });
 
     // ==================== DESKTOP WEB AUTH FLOW ====================
@@ -1604,8 +2080,9 @@
                 max-width: 100% !important;
             }
 
-            /* Artist Page Total Scrobbles Pill */
-            .sfm-artist-total-pill {
+            /* Artist & Album Page Total Scrobbles Pill */
+            .sfm-artist-total-pill,
+            .sfm-album-total-pill {
                 display: inline-flex !important;
                 align-items: center !important;
                 justify-content: center !important;
@@ -1628,12 +2105,14 @@
                 vertical-align: middle !important;
                 font-family: inherit !important;
             }
-            .sfm-artist-total-pill:hover {
+            .sfm-artist-total-pill:hover,
+            .sfm-album-total-pill:hover {
                 background: rgba(255, 255, 255, 0.2) !important;
                 border-color: rgba(255, 255, 255, 0.35) !important;
                 transform: scale(1.06) !important;
             }
-            .sfm-artist-total-pill:active {
+            .sfm-artist-total-pill:active,
+            .sfm-album-total-pill:active {
                 transform: scale(0.96) !important;
             }
 
@@ -1955,6 +2434,282 @@
             }
             .sfm-api-guide-btn:active {
                 transform: scale(0.97) !important;
+            }
+
+            /* Charts & Stats Styles */
+            .sfm-charts-header {
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+                gap: 12px;
+                flex-wrap: wrap;
+                margin-bottom: 12px;
+            }
+            .sfm-period-bar {
+                display: flex;
+                gap: 4px;
+                background: rgba(255, 255, 255, 0.05);
+                padding: 3px;
+                border-radius: 999px;
+            }
+            .sfm-period-btn {
+                background: transparent;
+                border: none;
+                color: rgba(255, 255, 255, 0.7);
+                padding: 4px 10px;
+                border-radius: 999px;
+                font-size: 11.5px;
+                font-weight: 600;
+                cursor: pointer;
+                transition: all 0.15s ease;
+            }
+            .sfm-period-btn:hover {
+                color: #fff;
+                background: rgba(255, 255, 255, 0.1);
+            }
+            .sfm-period-btn.active {
+                background: #d92323;
+                color: #fff;
+            }
+            .sfm-chart-list {
+                display: flex;
+                flex-direction: column;
+                gap: 6px;
+                max-height: 52vh;
+                overflow-y: auto;
+                padding-right: 4px;
+            }
+            .sfm-chart-row {
+                display: flex;
+                align-items: center;
+                gap: 12px;
+                padding: 8px 12px;
+                background: rgba(255, 255, 255, 0.03);
+                border: 1px solid rgba(255, 255, 255, 0.06);
+                border-radius: 8px;
+                transition: all 0.15s ease;
+                cursor: pointer;
+            }
+            .sfm-chart-row:hover {
+                background: rgba(255, 255, 255, 0.08);
+                border-color: rgba(255, 255, 255, 0.15);
+                transform: translateX(2px);
+            }
+            .sfm-rank-badge {
+                width: 26px;
+                height: 26px;
+                border-radius: 50%;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                font-size: 11px;
+                font-weight: 800;
+                flex-shrink: 0;
+                background: rgba(255, 255, 255, 0.08);
+                color: rgba(255, 255, 255, 0.7);
+            }
+            .sfm-rank-badge.rank-1 {
+                background: #ffd700;
+                color: #121212;
+                box-shadow: 0 0 10px rgba(255, 215, 0, 0.4);
+            }
+            .sfm-rank-badge.rank-2 {
+                background: #d1d5db;
+                color: #121212;
+            }
+            .sfm-rank-badge.rank-3 {
+                background: #d97706;
+                color: #ffffff;
+            }
+            .sfm-chart-img {
+                width: 40px;
+                height: 40px;
+                border-radius: 6px;
+                object-fit: cover;
+                background: rgba(255, 255, 255, 0.08);
+                flex-shrink: 0;
+            }
+            .sfm-chart-img.is-artist {
+                border-radius: 50%;
+            }
+            .sfm-chart-meta {
+                flex: 1;
+                min-width: 0;
+            }
+            .sfm-chart-title {
+                font-size: 13px;
+                font-weight: 600;
+                white-space: nowrap;
+                overflow: hidden;
+                text-overflow: ellipsis;
+            }
+            .sfm-chart-sub {
+                font-size: 11.5px;
+                color: rgba(255, 255, 255, 0.55);
+                white-space: nowrap;
+                overflow: hidden;
+                text-overflow: ellipsis;
+                margin-top: 1px;
+            }
+            .sfm-chart-plays {
+                font-size: 12px;
+                font-weight: 700;
+                color: #ff5252;
+                background: rgba(227, 27, 35, 0.12);
+                border: 1px solid rgba(227, 27, 35, 0.3);
+                padding: 3px 8px;
+                border-radius: 999px;
+                font-variant-numeric: tabular-nums;
+                white-space: nowrap;
+                flex-shrink: 0;
+            }
+            .sfm-chart-link {
+                background: transparent;
+                border: none;
+                color: rgba(255, 255, 255, 0.4);
+                cursor: pointer;
+                padding: 4px 6px;
+                border-radius: 4px;
+                transition: color 0.15s ease;
+                display: flex;
+                align-items: center;
+            }
+            .sfm-chart-link:hover {
+                color: #ffffff;
+            }
+            @keyframes sfm-spin {
+                from { transform: rotate(0deg); }
+                to { transform: rotate(360deg); }
+            }
+            .sfm-spinner {
+                width: 24px;
+                height: 24px;
+                border: 3px solid rgba(255, 255, 255, 0.15);
+                border-top-color: #d92323;
+                border-radius: 50%;
+                animation: sfm-spin 0.8s linear infinite;
+            }
+
+            /* Gamification, Streaks & Milestones */
+            .sfm-dashboard-header {
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
+                gap: 16px;
+                padding: 10px 14px;
+                background: linear-gradient(135deg, rgba(255, 255, 255, 0.05) 0%, rgba(255, 255, 255, 0.02) 100%);
+                border: 1px solid rgba(255, 255, 255, 0.08);
+                border-radius: 10px;
+                margin-bottom: 12px;
+            }
+            .sfm-header-streak {
+                display: flex;
+                align-items: center;
+                gap: 10px;
+            }
+            .sfm-streak-flame {
+                font-size: 20px;
+                filter: grayscale(1);
+                transition: filter 0.3s ease;
+            }
+            .sfm-streak-flame.active {
+                filter: grayscale(0) drop-shadow(0 0 6px rgba(255, 100, 0, 0.6));
+            }
+            .sfm-streak-text strong {
+                display: block;
+                font-size: 13px;
+                color: #ffffff;
+            }
+            .sfm-streak-text span {
+                font-size: 11px;
+                color: rgba(255, 255, 255, 0.55);
+            }
+            .sfm-header-goal {
+                flex: 1;
+                max-width: 260px;
+            }
+            .sfm-goal-labels {
+                display: flex;
+                justify-content: space-between;
+                font-size: 11.5px;
+                margin-bottom: 4px;
+                color: rgba(255, 255, 255, 0.7);
+            }
+            .sfm-goal-labels strong {
+                color: #ffffff;
+            }
+            .sfm-goal-track {
+                width: 100%;
+                height: 6px;
+                background: rgba(255, 255, 255, 0.1);
+                border-radius: 999px;
+                overflow: hidden;
+            }
+            .sfm-goal-fill {
+                height: 100%;
+                background: linear-gradient(90deg, #ff5252, #d92323);
+                border-radius: 999px;
+                transition: width 0.3s ease;
+            }
+            .sfm-goal-fill.completed {
+                background: linear-gradient(90deg, #1ed760, #10b981);
+                box-shadow: 0 0 8px rgba(30, 215, 96, 0.6);
+            }
+            .sfm-milestone-toast {
+                position: fixed;
+                bottom: 100px;
+                right: 24px;
+                background: rgba(18, 18, 18, 0.95);
+                backdrop-filter: blur(16px);
+                border: 1px solid rgba(255, 215, 0, 0.5);
+                box-shadow: 0 12px 32px rgba(0, 0, 0, 0.6), 0 0 24px rgba(255, 215, 0, 0.25);
+                padding: 12px 18px;
+                border-radius: 12px;
+                display: flex;
+                align-items: center;
+                gap: 12px;
+                z-index: 10000;
+                color: #ffffff;
+                animation: sfm-toast-in 0.35s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+                max-width: 380px;
+                cursor: pointer;
+            }
+            @keyframes sfm-toast-in {
+                from { transform: translateY(20px) scale(0.95); opacity: 0; }
+                to { transform: translateY(0) scale(1); opacity: 1; }
+            }
+            @keyframes sfm-toast-out {
+                from { transform: translateY(0) scale(1); opacity: 1; }
+                to { transform: translateY(-10px) scale(0.95); opacity: 0; }
+            }
+            @keyframes sfm-gold-pulse {
+                0% { box-shadow: 0 0 0 0 rgba(255, 215, 0, 0.7); }
+                50% { box-shadow: 0 0 16px 4px rgba(255, 215, 0, 0.9); }
+                100% { box-shadow: 0 0 0 0 rgba(255, 215, 0, 0); }
+            }
+            .sfm-pulse-gold {
+                animation: sfm-gold-pulse 1.2s ease-in-out infinite;
+                border-color: #ffd700 !important;
+                color: #ffd700 !important;
+            }
+            .sfm-milestone-shelf {
+                display: flex;
+                gap: 8px;
+                overflow-x: auto;
+                padding-bottom: 6px;
+                margin-bottom: 12px;
+            }
+            .sfm-milestone-chip {
+                display: flex;
+                align-items: center;
+                gap: 6px;
+                background: rgba(255, 215, 0, 0.08);
+                border: 1px solid rgba(255, 215, 0, 0.25);
+                padding: 4px 10px;
+                border-radius: 999px;
+                font-size: 11.5px;
+                white-space: nowrap;
+                color: #fef08a;
             }
         `;
         document.head.appendChild(style);
@@ -2416,6 +3171,13 @@
         return '';
     }
 
+    function getAlbumPageName() {
+        const main = document.querySelector('main');
+        if (!main) return '';
+        const h1 = main.querySelector('h1[data-encore-id="text"], .main-entityHeader-title, [data-testid="entity-header"] h1, h1');
+        return h1?.textContent?.trim() || '';
+    }
+
     // ==================== TRACKLIST SCROBBLE ACTION PILL (SEAMLESS IN-ROW ACTION) ====================
     function formatPillCount(n) {
         if (typeof n !== 'number' || isNaN(n) || n <= 0) return '-';
@@ -2748,10 +3510,118 @@
         }
     }
 
+    function updateAlbumPageHeader() {
+        try {
+            if (!isAuthenticated() || !settings.showAlbumTotalScrobbles || !isAlbumView()) {
+                const existing = document.querySelector('.sfm-album-total-pill');
+                if (existing) existing.remove();
+                return;
+            }
+
+            const albumName = getAlbumPageName();
+            let artistName = getAlbumArtistName();
+            if (!albumName) return;
+
+            const main = document.querySelector('main');
+            if (!main) return;
+
+            if (!artistName) {
+                const artistLink = main.querySelector('a[href*="/artist/"]');
+                if (artistLink) artistName = cleanArtistTitle(artistLink.textContent || '');
+            }
+
+            const header = main.querySelector('div.main-entityHeader-headerText') ||
+                           main.querySelector('[data-testid="entity-header"]') ||
+                           main.querySelector('.main-entityHeader-container') ||
+                           main.querySelector('h1')?.parentElement;
+            if (!header) return;
+
+            // Target the metadata line containing duration/year/song count
+            let targetEl = Array.from(header.querySelectorAll('span, div, p')).find(el => 
+                el.children.length === 0 && /(?:\d+\s+(?:songs?|chansons?|canciones?|titres?|canções?)|min|sec)/i.test(el.textContent || '')
+            );
+            if (!targetEl) {
+                targetEl = header.querySelector('.main-entityHeader-metaDataText, .main-entityHeader-detailsText') || header.querySelector('h1');
+            }
+            if (!targetEl) return;
+
+            let pill = header.querySelector('.sfm-album-total-pill');
+            if (!pill) {
+                pill = document.createElement('button');
+                pill.className = 'sfm-album-total-pill';
+                pill.type = 'button';
+                pill.tabIndex = -1;
+                targetEl.after(pill);
+            } else if (pill.previousElementSibling !== targetEl) {
+                targetEl.after(pill);
+            }
+
+            const albumKey = `${normalizeArtistKey(artistName)}:::${normalizeArtistKey(albumName)}`;
+            if (pill.dataset.album === albumKey && pill.textContent && pill.textContent !== '...' && pill.textContent !== '-') {
+                return;
+            }
+            pill.dataset.album = albumKey;
+
+            pill.onclick = (e) => {
+                e.stopPropagation();
+                e.preventDefault();
+                if (artistName && albumName) {
+                    const aEnc = encodeURIComponent(artistName).replace(/%20/g, '+');
+                    const alEnc = encodeURIComponent(albumName).replace(/%20/g, '+');
+                    window.open(`https://www.last.fm/music/${aEnc}/${alEnc}`, '_blank');
+                }
+            };
+            pill.onmousedown = (e) => e.stopPropagation();
+
+            // 1. In-memory cache
+            if (albumPlaysCache.has(albumKey)) {
+                const cached = albumPlaysCache.get(albumKey);
+                pill.textContent = cached > 0 ? cached.toLocaleString() : '-';
+                pill.title = `${cached.toLocaleString()} total scrobbles for ${albumName} on Last.fm • Click to view album on Last.fm`;
+                return;
+            }
+
+            // 2. Immediate local cache from trackPlaysCache
+            let localSum = 0;
+            const artistPrefix = normalizeArtistKey(artistName) + '::';
+            for (const [k, count] of trackPlaysCache.entries()) {
+                if (k.startsWith(artistPrefix)) localSum += count;
+            }
+
+            if (localSum > 0) {
+                pill.textContent = localSum.toLocaleString();
+                pill.title = `${localSum.toLocaleString()} scrobbles cached locally • Fetching total from Last.fm...`;
+            } else {
+                pill.textContent = '...';
+                pill.title = `Loading total scrobbles for ${albumName} from Last.fm...`;
+            }
+
+            // 3. Exact userplaycount from Last.fm API
+            LastFmApi.getAlbumInfo({ artist: artistName, album: albumName }).then(data => {
+                if (pill.dataset.album !== albumKey) return;
+                const userCount = Number(data?.userplaycount ?? (localSum || 0));
+                albumPlaysCache.set(albumKey, userCount);
+                pill.textContent = userCount > 0 ? userCount.toLocaleString() : (localSum > 0 ? localSum.toLocaleString() : '-');
+                pill.title = `${userCount.toLocaleString()} total scrobbles for ${albumName} on Last.fm • Click to view album on Last.fm`;
+            }).catch(() => {
+                if (pill.dataset.album !== albumKey) return;
+                if (localSum > 0) {
+                    pill.textContent = localSum.toLocaleString();
+                } else {
+                    pill.textContent = '-';
+                }
+            });
+        } catch (err) {
+            console.debug('[SpicetifyFM] Error updating album page header:', err);
+        }
+    }
+
     function cleanupAllTracklists() {
         try {
             const artistTotalPill = document.querySelector('.sfm-artist-total-pill');
             if (artistTotalPill) artistTotalPill.remove();
+            const albumTotalPill = document.querySelector('.sfm-album-total-pill');
+            if (albumTotalPill) albumTotalPill.remove();
 
             // Clean up any stray or legacy badges in sidebar, nav, or rows
             document.querySelectorAll('.sfm-scrobble-tag, .sfm-scrobble-pill').forEach(el => el.remove());
@@ -2783,6 +3653,9 @@
         if (isArtistView() && settings.showArtistTotalScrobbles) {
             updateArtistPageHeader();
         }
+        if (isAlbumView() && settings.showAlbumTotalScrobbles) {
+            updateAlbumPageHeader();
+        }
     }
 
     let lastKnownPath = '';
@@ -2812,13 +3685,14 @@
                     mutation.target.classList?.contains('sfm-scrobble-tag') ||
                     mutation.target.classList?.contains('sfm-scrobble-pill') ||
                     mutation.target.classList?.contains('sfm-artist-total-pill') ||
+                    mutation.target.classList?.contains('sfm-album-total-pill') ||
                     mutation.target.id === 'spicetify-fm-np-badge'
                 )) {
                     continue;
                 }
                 for (const node of mutation.addedNodes) {
                     if (node.nodeType === 1) {
-                        if (node.classList?.contains('sfm-scrobble-tag') || node.classList?.contains('sfm-scrobble-pill') || node.classList?.contains('sfm-artist-total-pill')) {
+                        if (node.classList?.contains('sfm-scrobble-tag') || node.classList?.contains('sfm-scrobble-pill') || node.classList?.contains('sfm-artist-total-pill') || node.classList?.contains('sfm-album-total-pill')) {
                             continue;
                         }
                         shouldUpdate = true;
@@ -2901,6 +3775,11 @@
         if (isArtistView() && settings.showArtistTotalScrobbles) {
             if (!document.querySelector('.sfm-artist-total-pill')) {
                 updateArtistPageHeader();
+            }
+        }
+        if (isAlbumView() && settings.showAlbumTotalScrobbles) {
+            if (!document.querySelector('.sfm-album-total-pill')) {
+                updateAlbumPageHeader();
             }
         }
     }, 350);
@@ -3028,6 +3907,149 @@
         `;
         syncPillButtonState(pillBtnEl, '', html);
         syncPillButtonState(topbarBtnEl, '', html);
+    }
+
+    // ==================== QUICK-EDIT METADATA MODAL ====================
+    function openQuickEditModal(info) {
+        if (!info?.artist || !info?.track) return;
+        const existingOverlay = document.getElementById('sfm-quick-edit-overlay');
+        if (existingOverlay) existingOverlay.remove();
+
+        const rawArtist = info.artist.trim();
+        const rawTrack = info.track.trim();
+        const editKey = normalizeEditKey(rawArtist, rawTrack);
+        const existingEdit = savedEdits[editKey] || {};
+
+        const overlay = document.createElement('div');
+        overlay.id = 'sfm-quick-edit-overlay';
+        overlay.style.cssText = `
+            position: fixed;
+            inset: 0;
+            z-index: 100000;
+            background: rgba(0, 0, 0, 0.72);
+            backdrop-filter: blur(6px);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+        `;
+
+        const dialog = document.createElement('div');
+        dialog.style.cssText = `
+            width: 490px;
+            max-width: calc(100vw - 32px);
+            background: #18181b;
+            border: 1px solid rgba(255, 255, 255, 0.15);
+            border-radius: 14px;
+            box-shadow: 0 24px 64px rgba(0, 0, 0, 0.75);
+            padding: 22px;
+            display: flex;
+            flex-direction: column;
+            gap: 14px;
+            color: #fff;
+            font-family: var(--font-family, CircularSp, sans-serif);
+        `;
+
+        dialog.innerHTML = `
+            <div style="display:flex; justify-content:space-between; align-items:center;">
+                <div style="display:flex; align-items:center; gap:8px;">
+                    <span style="color:#e31b23;">${ICONS.lastfm}</span>
+                    <strong style="font-size:16px;">Edit Scrobble Metadata</strong>
+                </div>
+                <button id="sfm-qe-close" style="background:transparent; border:none; color:rgba(255,255,255,0.6); cursor:pointer; font-size:18px; padding:4px;">✕</button>
+            </div>
+            <div style="font-size:12px; color:rgba(255,255,255,0.6); background:rgba(255,255,255,0.05); padding:8px 10px; border-radius:6px;">
+                Spotify Original: <strong>${escapeHtml(rawArtist)}</strong> — <em>${escapeHtml(rawTrack)}</em>
+            </div>
+            <div class="sfm-field">
+                <label style="font-size:11px; text-transform:uppercase; font-weight:700; color:rgba(255,255,255,0.7); margin-bottom:4px; display:block;">Track Title</label>
+                <input class="sfm-input" id="sfm-qe-track" value="${escapeHtml(existingEdit.track || rawTrack)}" style="width:100%; box-sizing:border-box;" />
+            </div>
+            <div class="sfm-field">
+                <label style="font-size:11px; text-transform:uppercase; font-weight:700; color:rgba(255,255,255,0.7); margin-bottom:4px; display:block;">Artist Name</label>
+                <input class="sfm-input" id="sfm-qe-artist" value="${escapeHtml(existingEdit.artist || rawArtist)}" style="width:100%; box-sizing:border-box;" />
+            </div>
+            <div class="sfm-field">
+                <label style="font-size:11px; text-transform:uppercase; font-weight:700; color:rgba(255,255,255,0.7); margin-bottom:4px; display:block;">Album Name (Optional)</label>
+                <input class="sfm-input" id="sfm-qe-album" value="${escapeHtml(existingEdit.album || info.album || '')}" style="width:100%; box-sizing:border-box;" />
+            </div>
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-top:8px; gap:8px;">
+                <button class="sfm-btn danger" id="sfm-qe-reset" style="font-size:12px;" ${existingEdit.track ? '' : 'disabled'}>Reset to Original</button>
+                <div style="display:flex; gap:8px;">
+                    <button class="sfm-btn" id="sfm-qe-cancel" style="font-size:12px;">Cancel</button>
+                    <button class="sfm-btn primary" id="sfm-qe-save" style="font-size:12px;">Save & Apply</button>
+                </div>
+            </div>
+        `;
+
+        overlay.appendChild(dialog);
+        document.body.appendChild(overlay);
+
+        const close = () => {
+            window.removeEventListener('keydown', handleKey);
+            overlay.remove();
+        };
+
+        const handleKey = (e) => {
+            if (e.key === 'Escape') close();
+            if (e.key === 'Enter' && e.target?.tagName === 'INPUT') {
+                overlay.querySelector('#sfm-qe-save')?.click();
+            }
+        };
+        window.addEventListener('keydown', handleKey);
+
+        overlay.querySelector('#sfm-qe-close').onclick = close;
+        overlay.querySelector('#sfm-qe-cancel').onclick = close;
+        overlay.onclick = (e) => { if (e.target === overlay) close(); };
+
+        overlay.querySelector('#sfm-qe-reset').onclick = () => {
+            if (savedEdits[editKey]) {
+                delete savedEdits[editKey];
+                saveEdits();
+                notify(`Reset metadata for "${rawTrack}"`);
+                requestTracklistRepaint(true);
+            }
+            close();
+        };
+
+        overlay.querySelector('#sfm-qe-save').onclick = () => {
+            const customTrack = overlay.querySelector('#sfm-qe-track').value.trim();
+            const customArtist = overlay.querySelector('#sfm-qe-artist').value.trim();
+            const customAlbum = overlay.querySelector('#sfm-qe-album').value.trim();
+
+            if (!customTrack || !customArtist) {
+                notify('Track title and Artist name cannot be blank', true);
+                return;
+            }
+
+            savedEdits[editKey] = {
+                rawArtist,
+                rawTrack,
+                track: customTrack,
+                artist: customArtist,
+                album: customAlbum || '',
+                albumArtist: '',
+                updatedAt: Date.now()
+            };
+            saveEdits();
+
+            // If currently playing, update current session metadata immediately
+            if (currentSession && (currentSession.rawTrack === rawTrack || currentSession.track === rawTrack)) {
+                currentSession.track = customTrack;
+                currentSession.artist = customArtist;
+                if (customAlbum) currentSession.album = customAlbum;
+                fetchTrackDetailsForCurrentSession(currentSession);
+                sendNowPlayingForCurrentSession(currentSession);
+            }
+
+            notify(`Saved metadata override: "${customArtist}" - "${customTrack}"`);
+            requestTracklistRepaint(true);
+            close();
+        };
+
+        setTimeout(() => {
+            overlay.querySelector('#sfm-qe-track')?.focus();
+        }, 50);
     }
 
     // ==================== DASHBOARD MODAL UI ====================
@@ -3161,7 +4183,37 @@
             blocklist.artists.length +
             blocklist.tracks.length;
 
+        syncStreakDisplay();
+        const goal = settings.dailyGoal || 25;
+        const todayCount = streakData.todayScrobbles || 0;
+        const goalPct = Math.min(100, Math.round((todayCount / goal) * 100));
+        const goalDone = todayCount >= goal;
+
+        const streakHtml = settings.enableStreaks
+            ? `
+            <div class="sfm-dashboard-header">
+                <div class="sfm-header-streak">
+                    <span class="sfm-streak-flame ${streakData.currentStreak > 0 ? 'active' : ''}">🔥</span>
+                    <div class="sfm-streak-text">
+                        <strong>${streakData.currentStreak || 0} Day${streakData.currentStreak === 1 ? '' : 's'} Streak</strong>
+                        <span>Best: ${streakData.bestStreak || streakData.currentStreak || 0}d</span>
+                    </div>
+                </div>
+                <div class="sfm-header-goal">
+                    <div class="sfm-goal-labels">
+                        <span>🎯 Daily Goal</span>
+                        <strong>${todayCount} / ${goal} scrobbles</strong>
+                    </div>
+                    <div class="sfm-goal-track">
+                        <div class="sfm-goal-fill ${goalDone ? 'completed' : ''}" style="width: ${goalPct}%;"></div>
+                    </div>
+                </div>
+            </div>
+            `
+            : '';
+
         root.innerHTML = `
+            ${streakHtml}
             <div class="sfm-tabs">
                 <button class="sfm-tab-btn ${activeModalTab === 'now-playing' ? 'active' : ''}" data-tab="now-playing">
                     Now Playing
@@ -3171,6 +4223,9 @@
                 </button>
                 <button class="sfm-tab-btn ${activeModalTab === 'rules' ? 'active' : ''}" data-tab="rules">
                     Pano Rules (Edits & Regex) ${rulesCount ? `<span class="sfm-badge">${rulesCount}</span>` : ''}
+                </button>
+                <button class="sfm-tab-btn ${activeModalTab === 'charts' ? 'active' : ''}" data-tab="charts">
+                    Top Charts
                 </button>
                 <button class="sfm-tab-btn ${activeModalTab === 'settings' ? 'active' : ''}" data-tab="settings">
                     Settings & Account ${!isAuthenticated() ? '<span class="sfm-badge red">Setup</span>' : ''}
@@ -3193,6 +4248,12 @@
             renderHistoryTab(body);
         } else if (activeModalTab === 'rules') {
             renderRulesTab(body);
+        } else if (activeModalTab === 'charts') {
+            if (chartsState.data === null && !chartsState.loading && isAuthenticated()) {
+                loadChartsData();
+            } else {
+                renderChartsTab(body);
+            }
         } else if (activeModalTab === 'settings') {
             renderSettingsTab(body);
         }
@@ -3785,6 +4846,442 @@
         });
     }
 
+    // ==================== CHARTS & STATS TAB ====================
+    function getChartImageUrl(images) {
+        if (!images) return '';
+        if (typeof images === 'string') return images;
+        if (Array.isArray(images)) {
+            const preferred =
+                images.find(img => img?.size === 'large' || img?.size === 'extralarge' || img?.size === 'medium') ||
+                images[images.length - 1];
+            const url = preferred?.['#text'] || preferred?.url || '';
+            if (url && !url.includes('2a96cbd8b46e442fc41c2b86b821562f')) return url;
+        }
+        return '';
+    }
+
+    function navigateSpotifySearch(query) {
+        const clean = (query || '').trim();
+        if (!clean) return;
+        const encoded = encodeURIComponent(clean);
+        try {
+            if (Spicetify.Platform?.History?.push) {
+                Spicetify.Platform.History.push(`/search/${encoded}`);
+                return;
+            }
+        } catch (_) {}
+        try {
+            if (Spicetify.Platform?.History?.push) {
+                Spicetify.Platform.History.push({ pathname: `/search/${encoded}` });
+                return;
+            }
+        } catch (_) {}
+        window.open(`https://open.spotify.com/search/${encoded}`, '_blank');
+    }
+
+    async function loadChartsData(force = false) {
+        if (!isAuthenticated()) return;
+        const cacheKey = `${settings.username}:${chartsState.category}:${chartsState.period}`;
+        const cached = chartsCache.get(cacheKey);
+        const now = Date.now();
+        if (!force && cached && (now - cached.timestamp < 5 * 60 * 1000)) {
+            chartsState.data = cached.data;
+            chartsState.loading = false;
+            chartsState.error = '';
+            renderModalContent();
+            return;
+        }
+
+        chartsState.loading = true;
+        chartsState.error = '';
+        renderModalContent();
+
+        try {
+            let res = [];
+            if (chartsState.category === 'tracks') {
+                res = await LastFmApi.getUserTopTracks({ period: chartsState.period, limit: 25 });
+            } else if (chartsState.category === 'artists') {
+                res = await LastFmApi.getUserTopArtists({ period: chartsState.period, limit: 25 });
+            } else if (chartsState.category === 'albums') {
+                res = await LastFmApi.getUserTopAlbums({ period: chartsState.period, limit: 25 });
+            }
+            chartsState.data = res;
+            chartsState.loading = false;
+            chartsCache.set(cacheKey, { timestamp: now, data: res });
+        } catch (err) {
+            chartsState.loading = false;
+            chartsState.error = err?.message || 'Failed to fetch charts from Last.fm';
+        }
+        renderModalContent();
+    }
+
+    function getChartItemKey(category, title, artist) {
+        return `${category}:${String(title || '').trim().toLowerCase()}::${String(artist || '').trim().toLowerCase()}`;
+    }
+
+    async function resolveChartImage(category, title, artist) {
+        const key = getChartItemKey(category, title, artist);
+        if (chartImagesCache.has(key)) {
+            const cached = chartImagesCache.get(key);
+            if (cached) return cached;
+        }
+
+        let imageUrl = '';
+
+        // 1. Try Spotify Web API if desktop session token is accessible
+        try {
+            const token =
+                window.Spicetify?.Platform?.AuthorizationAPI?.getState?.()?.token?.accessToken ||
+                window.Spicetify?.Platform?.Session?.accessToken;
+            if (token) {
+                let type = category === 'artists' ? 'artist' : category === 'albums' ? 'album' : 'track';
+                let q = '';
+                if (category === 'artists') {
+                    q = encodeURIComponent(title || artist);
+                } else if (category === 'albums') {
+                    const cleanAlbum = (title || '').replace(/\(.*?\)/g, '').replace(/\[.*?\]/g, '').trim();
+                    q = encodeURIComponent(`${cleanAlbum} ${artist}`);
+                } else {
+                    const cleanTitle = (title || '').replace(/\(.*?\)/g, '').replace(/\[.*?\]/g, '').trim();
+                    q = encodeURIComponent(`${cleanTitle} ${artist}`);
+                }
+
+                const res = await fetch(`https://api.spotify.com/v1/search?type=${type}&limit=1&q=${q}`, {
+                    headers: { Authorization: `Bearer ${token}` },
+                });
+                if (res.ok) {
+                    const data = await res.json();
+                    if (category === 'artists') {
+                        const img = data?.artists?.items?.[0]?.images;
+                        if (img?.length) imageUrl = img[img.length > 1 ? 1 : 0]?.url || img[0]?.url || '';
+                    } else if (category === 'albums') {
+                        const img = data?.albums?.items?.[0]?.images;
+                        if (img?.length) imageUrl = img[img.length > 1 ? 1 : 0]?.url || img[0]?.url || '';
+                    } else {
+                        const img = data?.tracks?.items?.[0]?.album?.images;
+                        if (img?.length) imageUrl = img[img.length > 1 ? 1 : 0]?.url || img[0]?.url || '';
+                    }
+                }
+            }
+        } catch (_) {}
+
+        // 2. High-reliability iTunes API (100% CORS-friendly, crystal clear 300x300 artwork)
+        if (!imageUrl) {
+            try {
+                if (category === 'artists') {
+                    const term = encodeURIComponent(title || artist);
+                    // Query entity=album to get artist's official album cover art
+                    const res = await fetch(`https://itunes.apple.com/search?term=${term}&entity=album&limit=1`);
+                    if (res.ok) {
+                        const data = await res.json();
+                        const raw = data?.results?.[0]?.artworkUrl100 || data?.results?.[0]?.artworkUrl60;
+                        if (raw) imageUrl = raw.replace('100x100bb', '300x300bb');
+                    }
+                } else if (category === 'albums') {
+                    const cleanAlbum = (title || '').replace(/\(.*?\)/g, '').replace(/\[.*?\]/g, '').trim();
+                    const term = encodeURIComponent(`${cleanAlbum} ${artist}`);
+                    const res = await fetch(`https://itunes.apple.com/search?term=${term}&entity=album&limit=1`);
+                    if (res.ok) {
+                        const data = await res.json();
+                        const raw = data?.results?.[0]?.artworkUrl100 || data?.results?.[0]?.artworkUrl60;
+                        if (raw) imageUrl = raw.replace('100x100bb', '300x300bb');
+                    }
+                } else {
+                    const cleanTitle = (title || '').replace(/\(.*?\)/g, '').replace(/\[.*?\]/g, '').trim();
+                    const term = encodeURIComponent(`${cleanTitle} ${artist}`);
+                    let res = await fetch(`https://itunes.apple.com/search?term=${term}&entity=song&limit=1`);
+                    if (res.ok) {
+                        const data = await res.json();
+                        const raw = data?.results?.[0]?.artworkUrl100 || data?.results?.[0]?.artworkUrl60;
+                        if (raw) imageUrl = raw.replace('100x100bb', '300x300bb');
+                    }
+                    if (!imageUrl && artist) {
+                        res = await fetch(`https://itunes.apple.com/search?term=${encodeURIComponent(artist)}&entity=album&limit=1`);
+                        if (res.ok) {
+                            const data = await res.json();
+                            const raw = data?.results?.[0]?.artworkUrl100 || data?.results?.[0]?.artworkUrl60;
+                            if (raw) imageUrl = raw.replace('100x100bb', '300x300bb');
+                        }
+                    }
+                }
+            } catch (_) {}
+        }
+
+        // 3. Fallback to Wikipedia Summary API for Artists
+        if (!imageUrl && category === 'artists') {
+            try {
+                const term = encodeURIComponent(title || artist);
+                const res = await fetch(`https://en.wikipedia.org/api/rest_v1/page/summary/${term}`);
+                if (res.ok) {
+                    const data = await res.json();
+                    if (data?.thumbnail?.source) {
+                        imageUrl = data.thumbnail.source;
+                    }
+                }
+            } catch (_) {}
+        }
+
+        if (imageUrl) {
+            chartImagesCache.set(key, imageUrl);
+        }
+        return imageUrl;
+    }
+
+    async function populateChartImages(container, category, items) {
+        if (!Array.isArray(items) || !items.length) return;
+        const currentCategory = chartsState.category;
+        const currentPeriod = chartsState.period;
+
+        const batchSize = 6;
+        for (let i = 0; i < items.length; i += batchSize) {
+            if (chartsState.category !== currentCategory || chartsState.period !== currentPeriod) return;
+            const chunk = items.slice(i, i + batchSize);
+            await Promise.allSettled(
+                chunk.map(async (item, chunkIdx) => {
+                    const idx = i + chunkIdx;
+                    const isArtist = category === 'artists';
+                    const title = item.name;
+                    const subtitle = typeof item.artist === 'object' ? (item.artist?.name || '') : (item.artist || '');
+                    const artistName = isArtist ? title : subtitle;
+                    const key = getChartItemKey(category, title, artistName);
+
+                    const url = chartImagesCache.get(key) || (await resolveChartImage(category, title, artistName));
+                    if (url) {
+                        if (chartsState.category !== currentCategory || chartsState.period !== currentPeriod) return;
+                        const rowEl = container.querySelector(`.sfm-chart-row[data-idx="${idx}"]`);
+                        if (!rowEl || !container.contains(rowEl)) return;
+                        const placeholder = rowEl.querySelector('.sfm-chart-img');
+                        if (placeholder) {
+                            if (placeholder.tagName.toLowerCase() === 'img') {
+                                placeholder.src = url;
+                            } else {
+                                const newImg = document.createElement('img');
+                                newImg.className = `sfm-chart-img ${isArtist ? 'is-artist' : ''}`;
+                                newImg.src = url;
+                                newImg.loading = 'lazy';
+                                newImg.onerror = () => {};
+                                placeholder.replaceWith(newImg);
+                            }
+                        }
+                    }
+                })
+            );
+        }
+    }
+
+    function renderChartsTab(container) {
+        if (!isAuthenticated()) {
+            container.innerHTML = `
+                <div class="sfm-card" style="text-align:center; padding: 32px 20px;">
+                    <div style="font-size:32px; margin-bottom:10px;">📊</div>
+                    <h3 style="margin:0 0 8px 0; font-size:16px;">Connect Last.fm to View Top Charts</h3>
+                    <p style="color:rgba(255,255,255,0.7); font-size:13px; max-width:420px; margin:0 auto 16px auto;">
+                        View your personal Top Tracks, Artists, and Albums across different time periods with direct Spotify search and playback.
+                    </p>
+                    <button class="sfm-btn primary" id="sfm-charts-goto-settings">
+                        Configure Last.fm Account →
+                    </button>
+                </div>
+            `;
+            container.querySelector('#sfm-charts-goto-settings')?.addEventListener('click', () => {
+                activeModalTab = 'settings';
+                renderModalContent();
+            });
+            return;
+        }
+
+        const periods = [
+            { id: '7day', label: '7 Days' },
+            { id: '1month', label: '30 Days' },
+            { id: '3month', label: '90 Days' },
+            { id: '12month', label: '1 Year' },
+            { id: 'overall', label: 'All Time' }
+        ];
+
+        const categories = [
+            { id: 'tracks', label: 'Top Tracks' },
+            { id: 'artists', label: 'Top Artists' },
+            { id: 'albums', label: 'Top Albums' }
+        ];
+
+        const categoryButtonsHtml = categories.map(cat => `
+            <button class="sfm-btn ${chartsState.category === cat.id ? 'primary' : ''}" data-cat="${cat.id}" style="padding: 5px 12px; font-size: 12px;">
+                ${cat.label}
+            </button>
+        `).join('');
+
+        const periodButtonsHtml = periods.map(p => `
+            <button class="sfm-period-btn ${chartsState.period === p.id ? 'active' : ''}" data-period="${p.id}">
+                ${p.label}
+            </button>
+        `).join('');
+
+        let contentHtml = '';
+
+        if (chartsState.loading) {
+            contentHtml = `
+                <div style="text-align:center; padding: 48px 20px; color:rgba(255,255,255,0.6);">
+                    <div class="sfm-spinner" style="margin:0 auto 14px auto;"></div>
+                    <div style="font-size:13px; font-weight:500;">Fetching your ${chartsState.category === 'tracks' ? 'top tracks' : chartsState.category === 'artists' ? 'top artists' : 'top albums'} from Last.fm...</div>
+                </div>
+            `;
+        } else if (chartsState.error) {
+            contentHtml = `
+                <div class="sfm-card" style="text-align:center; padding: 24px; border-color:rgba(239,68,68,0.4);">
+                    <div style="color:#f87171; font-weight:600; margin-bottom:8px;">Failed to load charts</div>
+                    <div style="font-size:12px; color:rgba(255,255,255,0.6); margin-bottom:14px;">${escapeHtml(chartsState.error)}</div>
+                    <button class="sfm-btn" id="sfm-charts-retry-btn">Retry</button>
+                </div>
+            `;
+        } else if (!chartsState.data || chartsState.data.length === 0) {
+            contentHtml = `
+                <div style="text-align:center; padding: 48px 20px; color:rgba(255,255,255,0.5); font-size:13px;">
+                    No scrobbles recorded for this time period. Keep listening on Spotify!
+                </div>
+            `;
+        } else {
+            const rowsHtml = chartsState.data.map((item, idx) => {
+                const rank = idx + 1;
+                const rankClass = rank === 1 ? 'rank-1' : rank === 2 ? 'rank-2' : rank === 3 ? 'rank-3' : '';
+                const plays = Number(item.playcount || 0).toLocaleString();
+                const isArtist = chartsState.category === 'artists';
+
+                let title = '';
+                let subtitle = '';
+                let searchQuery = '';
+
+                if (chartsState.category === 'tracks') {
+                    title = item.name;
+                    subtitle = typeof item.artist === 'object' ? (item.artist?.name || '') : (item.artist || '');
+                    searchQuery = `${title} ${subtitle}`;
+                } else if (chartsState.category === 'artists') {
+                    title = item.name;
+                    subtitle = 'Artist';
+                    searchQuery = title;
+                } else if (chartsState.category === 'albums') {
+                    title = item.name;
+                    subtitle = typeof item.artist === 'object' ? (item.artist?.name || '') : (item.artist || '');
+                    searchQuery = `${title} ${subtitle}`;
+                }
+
+                const artistName = isArtist ? title : subtitle;
+                const key = getChartItemKey(chartsState.category, title, artistName);
+                const lfmImg = getChartImageUrl(item.image);
+                if (lfmImg) {
+                    chartImagesCache.set(key, lfmImg);
+                }
+                const imgUrl = chartImagesCache.get(key) || lfmImg;
+
+                const imgPlaceholder = `<div class="sfm-chart-img ${isArtist ? 'is-artist' : ''}" style="display:flex; align-items:center; justify-content:center; background:rgba(255,255,255,0.08); color:rgba(255,255,255,0.4); font-size:14px;">${isArtist ? '🎤' : '🎵'}</div>`;
+                const imgTag = imgUrl ? `<img class="sfm-chart-img ${isArtist ? 'is-artist' : ''}" src="${escapeHtml(imgUrl)}" loading="lazy" onerror="this.outerHTML='${escapeHtml(imgPlaceholder)}'" />` : imgPlaceholder;
+
+                return `
+                    <div class="sfm-chart-row" data-idx="${idx}" data-query="${escapeHtml(searchQuery)}" title="Click to search on Spotify">
+                        <div class="sfm-rank-badge ${rankClass}">#${rank}</div>
+                        ${imgTag}
+                        <div class="sfm-chart-meta">
+                            <div class="sfm-chart-title">${escapeHtml(title)}</div>
+                            <div class="sfm-chart-sub">${escapeHtml(subtitle)}</div>
+                        </div>
+                        <div class="sfm-chart-plays">${plays} ${Number(item.playcount) === 1 ? 'play' : 'plays'}</div>
+                        ${item.url ? `
+                            <a class="sfm-chart-link" href="${escapeHtml(item.url)}" target="_blank" rel="noopener noreferrer" title="View on Last.fm" onclick="event.stopPropagation();">
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path><polyline points="15 3 21 3 21 9"></polyline><line x1="10" y1="14" x2="21" y2="3"></line></svg>
+                            </a>
+                        ` : ''}
+                    </div>
+                `;
+            }).join('');
+
+            contentHtml = `<div class="sfm-chart-list">${rowsHtml}</div>`;
+        }
+
+        const recentMilestonesHtml =
+            settings.enableMilestones && milestonesHistory.length > 0
+                ? `
+            <div style="margin-bottom:12px;">
+                <div style="font-size:11px; font-weight:700; text-transform:uppercase; color:rgba(255,255,255,0.45); letter-spacing:0.5px; margin-bottom:6px;">
+                    🏆 Recent Milestones
+                </div>
+                <div class="sfm-milestone-shelf">
+                    ${milestonesHistory
+                        .slice(0, 10)
+                        .map(
+                            m => `
+                        <div class="sfm-milestone-chip" title="${escapeHtml(new Date(m.date).toLocaleDateString())}">
+                            <span>${m.type === 'profile' ? '👑' : '🎉'}</span>
+                            <strong>#${Number(m.tier).toLocaleString()}</strong>
+                            <span>${escapeHtml(m.name)}</span>
+                        </div>
+                    `
+                        )
+                        .join('')}
+                </div>
+            </div>
+            `
+                : '';
+
+        container.innerHTML = `
+            ${recentMilestonesHtml}
+            <div class="sfm-charts-header">
+                <div style="display:flex; gap:6px;">
+                    ${categoryButtonsHtml}
+                </div>
+                <div style="display:flex; align-items:center; gap:8px;">
+                    <div class="sfm-period-bar">
+                        ${periodButtonsHtml}
+                    </div>
+                    <button class="sfm-btn" id="sfm-charts-refresh-btn" title="Refresh charts" style="padding:4px 9px; font-size:12px;">
+                        ↻
+                    </button>
+                </div>
+            </div>
+            ${contentHtml}
+        `;
+
+        if (chartsState.data && chartsState.data.length > 0) {
+            populateChartImages(container, chartsState.category, chartsState.data);
+        }
+
+        container.querySelectorAll('[data-cat]').forEach(btn => {
+            btn.addEventListener('click', () => {
+                const cat = btn.getAttribute('data-cat');
+                if (chartsState.category !== cat) {
+                    chartsState.category = cat;
+                    loadChartsData();
+                }
+            });
+        });
+
+        container.querySelectorAll('[data-period]').forEach(btn => {
+            btn.addEventListener('click', () => {
+                const p = btn.getAttribute('data-period');
+                if (chartsState.period !== p) {
+                    chartsState.period = p;
+                    loadChartsData();
+                }
+            });
+        });
+
+        container.querySelector('#sfm-charts-refresh-btn')?.addEventListener('click', () => {
+            loadChartsData(true);
+        });
+
+        container.querySelector('#sfm-charts-retry-btn')?.addEventListener('click', () => {
+            loadChartsData(true);
+        });
+
+        container.querySelectorAll('.sfm-chart-row').forEach(row => {
+            row.addEventListener('click', e => {
+                if (e.target.closest('.sfm-chart-link')) return;
+                const query = row.getAttribute('data-query');
+                if (query) {
+                    navigateSpotifySearch(query);
+                }
+            });
+        });
+    }
+
     function renderSettingsTab(container) {
         const connected = isAuthenticated();
 
@@ -3963,6 +5460,20 @@
                     </div>
                     <input type="checkbox" id="sfm-chk-artist-total" ${settings.showArtistTotalScrobbles ? 'checked' : ''} />
                 </div>
+                <div class="sfm-toggle-row">
+                    <div class="sfm-toggle-label">
+                        <strong>Show Total Album Scrobbles Badge</strong>
+                        <span>Displays your total scrobbles badge next to duration on album pages</span>
+                    </div>
+                    <input type="checkbox" id="sfm-chk-album-total" ${settings.showAlbumTotalScrobbles ? 'checked' : ''} />
+                </div>
+                <div class="sfm-toggle-row">
+                    <div class="sfm-toggle-label">
+                        <strong>Auto-Sync Spotify Likes to Last.fm Loved Tracks</strong>
+                        <span>Automatically loves a song on Last.fm when you like/save it on Spotify, and unloves when removed</span>
+                    </div>
+                    <input type="checkbox" id="sfm-chk-like-sync" ${settings.syncSpotifyLikesToLoved ? 'checked' : ''} />
+                </div>
                 <div style="display:flex; justify-content:space-between; align-items:center; margin-top:12px; padding-top:10px; border-top:1px solid rgba(255,255,255,0.08); flex-wrap:wrap; gap:8px;">
                     <div>
                         <strong style="font-size:13px;">Offline Track Playcounts Cache</strong>
@@ -3974,6 +5485,80 @@
                         ${isSyncingLibrary ? 'Syncing...' : 'Sync Last.fm Library Now'}
                     </button>
                 </div>
+            </div>
+
+            <div class="sfm-card" style="margin-top:12px;">
+                <strong style="display:block; margin-bottom:8px;">5. Gamification, Listening Streaks & Milestones</strong>
+                <div class="sfm-toggle-row">
+                    <div class="sfm-toggle-label">
+                        <strong>Daily Listening Streak & Goals</strong>
+                        <span>Show streak flame and daily goal progress bar in the Alt + L dashboard</span>
+                    </div>
+                    <input type="checkbox" id="sfm-chk-streaks" ${settings.enableStreaks ? 'checked' : ''} />
+                </div>
+                <div class="sfm-toggle-row">
+                    <div class="sfm-toggle-label">
+                        <strong>Milestone Celebrations & Toast Alerts</strong>
+                        <span>Celebrate track play milestones (10, 25, 50, 100...) and profile totals with floating toasts and gold badge pulses</span>
+                    </div>
+                    <input type="checkbox" id="sfm-chk-milestones" ${settings.enableMilestones ? 'checked' : ''} />
+                </div>
+                <div class="sfm-field" style="margin-top:8px;">
+                    <label>Daily Scrobble Goal: <span id="sfm-lbl-goal">${settings.dailyGoal}</span> scrobbles/day</label>
+                    <input type="range" min="10" max="100" step="5" id="sfm-range-goal" value="${settings.dailyGoal}" />
+                </div>
+            </div>
+
+            <div class="sfm-card" style="margin-top:12px;">
+                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px; gap:8px; flex-wrap:wrap;">
+                    <strong style="display:flex; align-items:center; gap:8px;">
+                        <span>6. ListenBrainz Dual-Scrobbling (Optional)</span>
+                        ${
+                            settings.enableListenBrainz && settings.listenBrainzUsername
+                                ? `<span class="sfm-badge green">Connected as ${escapeHtml(settings.listenBrainzUsername)}</span>`
+                                : '<span class="sfm-badge">Optional</span>'
+                        }
+                    </strong>
+                    <a class="sfm-api-guide-btn" id="sfm-open-lb-profile" role="button" tabindex="0">
+                        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path><polyline points="15 3 21 3 21 9"></polyline><line x1="10" y1="14" x2="21" y2="3"></line></svg>
+                        <span>Get User Token from ListenBrainz ↗</span>
+                    </a>
+                </div>
+                <p style="font-size:12px; color:rgba(255,255,255,0.65); margin:0 0 12px 0; line-height:1.4;">
+                    Scrobble your music in real-time to both Last.fm and the open-source ListenBrainz / MetaBrainz platform simultaneously, with dedicated offline queueing and error isolation.
+                </p>
+                <div class="sfm-toggle-row" style="margin-bottom:12px;">
+                    <div class="sfm-toggle-label">
+                        <strong>Enable ListenBrainz Scrobbling</strong>
+                        <span>Send simultaneous scrobbles and now-playing updates to your ListenBrainz profile</span>
+                    </div>
+                    <input type="checkbox" id="sfm-chk-lb-enabled" ${settings.enableListenBrainz ? 'checked' : ''} />
+                </div>
+                <div class="sfm-field" style="margin-bottom:10px;">
+                    <label>ListenBrainz User Token</label>
+                    <div style="display:flex; gap:8px;">
+                        <input class="sfm-input" type="password" id="sfm-input-lb-token" placeholder="Paste your ListenBrainz User Token here" value="${escapeHtml(settings.listenBrainzToken)}" style="flex:1;" />
+                        <button class="sfm-btn primary" id="sfm-save-lb-btn">Validate & Connect</button>
+                        ${settings.listenBrainzToken ? '<button class="sfm-btn danger" id="sfm-disconnect-lb-btn">Disconnect</button>' : ''}
+                    </div>
+                </div>
+                <div id="sfm-lb-status" style="font-size:12px; min-height:18px;">
+                    ${
+                        settings.listenBrainzUsername
+                            ? `<span style="color:#1ed760;">✓ Verified profile: <strong>${escapeHtml(settings.listenBrainzUsername)}</strong>${listenBrainzQueue.length > 0 ? ` • ${listenBrainzQueue.length} offline listen(s) queued` : ''}</span>`
+                            : ''
+                    }
+                </div>
+                ${
+                    listenBrainzQueue.length > 0
+                        ? `
+                        <div style="display:flex; justify-content:space-between; align-items:center; margin-top:10px; padding-top:8px; border-top:1px solid rgba(255,255,255,0.08);">
+                            <span style="font-size:11.5px; color:#fbbf24;">${listenBrainzQueue.length} offline listen(s) pending sync</span>
+                            <button class="sfm-btn" id="sfm-flush-lb-btn" style="padding:3px 8px; font-size:11px;">Flush LB Queue Now</button>
+                        </div>
+                    `
+                        : ''
+                }
             </div>
         `;
 
@@ -4070,6 +5655,28 @@
             updateArtistPageHeader();
         });
 
+        container.querySelector('#sfm-chk-album-total')?.addEventListener('change', e => {
+            settings.showAlbumTotalScrobbles = e.target.checked;
+            saveSettings();
+            updateAlbumPageHeader();
+        });
+
+        container.querySelector('#sfm-chk-like-sync')?.addEventListener('change', e => {
+            settings.syncSpotifyLikesToLoved = e.target.checked;
+            saveSettings();
+        });
+
+        bindCheckbox('#sfm-chk-streaks', 'enableStreaks');
+        bindCheckbox('#sfm-chk-milestones', 'enableMilestones');
+
+        const rangeGoal = container.querySelector('#sfm-range-goal');
+        const lblGoal = container.querySelector('#sfm-lbl-goal');
+        rangeGoal?.addEventListener('input', () => {
+            settings.dailyGoal = Number(rangeGoal.value);
+            if (lblGoal) lblGoal.textContent = `${settings.dailyGoal}`;
+            saveSettings();
+        });
+
         container.querySelector('#sfm-sync-lib-btn')?.addEventListener('click', async () => {
             const btn = container.querySelector('#sfm-sync-lib-btn');
             const lbl = container.querySelector('#sfm-sync-status-lbl');
@@ -4087,6 +5694,55 @@
                 lbl.textContent = `${trackPlaysCache.size} tracks cached locally in IndexedDB`;
             }
             notify(`Last.fm library sync complete: ${trackPlaysCache.size} tracks.`);
+            renderModalContent();
+        });
+
+        // ListenBrainz card handlers
+        container.querySelector('#sfm-open-lb-profile')?.addEventListener('click', () => {
+            window.open('https://listenbrainz.org/profile/', '_blank');
+        });
+
+        const lbChk = container.querySelector('#sfm-chk-lb-enabled');
+        lbChk?.addEventListener('change', () => {
+            settings.enableListenBrainz = lbChk.checked;
+            saveSettings();
+        });
+
+        const lbTokenInput = container.querySelector('#sfm-input-lb-token');
+        const lbStatus = container.querySelector('#sfm-lb-status');
+
+        container.querySelector('#sfm-save-lb-btn')?.addEventListener('click', async () => {
+            const token = lbTokenInput?.value.trim() || '';
+            if (!token) {
+                if (lbStatus) lbStatus.innerHTML = '<span style="color:#f87171;">Please enter your ListenBrainz user token first.</span>';
+                return;
+            }
+            if (lbStatus) lbStatus.innerHTML = '<span style="color:#fbbf24;">Validating token with ListenBrainz...</span>';
+            try {
+                const username = await ListenBrainzApi.validateToken(token);
+                settings.listenBrainzToken = token;
+                settings.listenBrainzUsername = username;
+                settings.enableListenBrainz = true;
+                saveSettings();
+                notify(`ListenBrainz connected as ${username}!`);
+                renderModalContent();
+            } catch (err) {
+                if (lbStatus) lbStatus.innerHTML = `<span style="color:#f87171;">Validation failed: ${escapeHtml(err.message)}</span>`;
+            }
+        });
+
+        container.querySelector('#sfm-disconnect-lb-btn')?.addEventListener('click', () => {
+            settings.listenBrainzToken = '';
+            settings.listenBrainzUsername = '';
+            settings.enableListenBrainz = false;
+            saveSettings();
+            notify('Disconnected from ListenBrainz.');
+            renderModalContent();
+        });
+
+        container.querySelector('#sfm-flush-lb-btn')?.addEventListener('click', async () => {
+            notify('Flushing ListenBrainz offline queue...');
+            await ListenBrainzApi.flushQueue();
             renderModalContent();
         });
     }
@@ -4212,5 +5868,207 @@
         }
     }
 
-    console.log('[SpicetifyFM] Loaded In-App Last.fm Scrobbler v1.0.2');
+    // ==================== CONTEXT MENU INTEGRATION ====================
+    async function getTrackInfoFromContext(uris) {
+        const uri = uris?.[0] || '';
+        // 1. Try currently playing track
+        if (currentSession && (currentSession.uri === uri || !uri)) {
+            return {
+                artist: currentSession.rawArtist || currentSession.artist,
+                track: currentSession.rawTrack || currentSession.track,
+                album: currentSession.album || '',
+                uri: currentSession.uri
+            };
+        }
+        // 2. Try CosmosAsync
+        if (Spicetify.CosmosAsync && uri && uri.startsWith('spotify:track:')) {
+            try {
+                const trackId = uri.split(':').pop();
+                const res = await Spicetify.CosmosAsync.get(`https://api.spotify.com/v1/tracks/${trackId}`);
+                if (res?.name) {
+                    return {
+                        artist: res.artists?.[0]?.name || '',
+                        track: res.name || '',
+                        album: res.album?.name || '',
+                        uri
+                    };
+                }
+            } catch (_) {}
+        }
+        // 3. Try hovered tracklist row in DOM
+        const hoveredRow = document.querySelector('main .main-trackList-trackListRow:hover, main [data-testid="tracklist-row"]:hover, main [role="row"]:hover');
+        if (hoveredRow) {
+            const info = readTrackInfo(hoveredRow);
+            if (info) {
+                return { artist: info.artist, track: info.title, album: '', uri };
+            }
+        }
+        return null;
+    }
+
+    function initContextMenu() {
+        if (!Spicetify.ContextMenu?.Item) return;
+
+        const isTrack = (uris) => {
+            if (!uris || !uris.length) return false;
+            const u = uris[0];
+            return typeof u === 'string' && (u.startsWith('spotify:track:') || u.includes(':track:'));
+        };
+
+        const viewItem = new Spicetify.ContextMenu.Item(
+            'View on Last.fm ↗',
+            async (uris) => {
+                const info = await getTrackInfoFromContext(uris);
+                if (info?.artist && info?.track) {
+                    const a = encodeURIComponent(info.artist).replace(/%20/g, '+');
+                    const t = encodeURIComponent(info.track).replace(/%20/g, '+');
+                    window.open(`https://www.last.fm/music/${a}/_/${t}`, '_blank');
+                } else {
+                    notify('Could not retrieve track info for Last.fm', true);
+                }
+            },
+            isTrack
+        );
+
+        const editItem = new Spicetify.ContextMenu.Item(
+            'Edit Last.fm Metadata...',
+            async (uris) => {
+                const info = await getTrackInfoFromContext(uris);
+                if (info?.artist && info?.track) {
+                    openQuickEditModal(info);
+                } else {
+                    notify('Could not retrieve track info to edit', true);
+                }
+            },
+            isTrack
+        );
+
+        const loveItem = new Spicetify.ContextMenu.Item(
+            'Love / Unlove on Last.fm',
+            async (uris) => {
+                const info = await getTrackInfoFromContext(uris);
+                if (!info?.artist || !info?.track) return;
+                try {
+                    const isCurrent = currentSession && currentSession.track === info.track;
+                    const nextLoved = isCurrent ? !currentSession.userLoved : true;
+                    await LastFmApi.setTrackLove({ artist: info.artist, track: info.track, loved: nextLoved });
+                    if (isCurrent) currentSession.userLoved = nextLoved;
+                    notify(`${nextLoved ? 'Loved ♥' : 'Unloved'}: ${info.artist} - ${info.track}`);
+                    updateUI();
+                } catch (err) {
+                    notify(`Failed to update Last.fm love: ${err.message}`, true);
+                }
+            },
+            isTrack
+        );
+
+        const blockTrackItem = new Spicetify.ContextMenu.Item(
+            'Block / Unblock Track',
+            async (uris) => {
+                const info = await getTrackInfoFromContext(uris);
+                if (!info?.artist || !info?.track) return;
+                const normKey = normalizeEditKey(info.artist, info.track);
+                const idx = blocklist.tracks.indexOf(normKey);
+                if (idx >= 0) {
+                    blocklist.tracks.splice(idx, 1);
+                    saveBlocklist();
+                    notify(`Unblocked track: "${info.track}"`);
+                } else {
+                    blocklist.tracks.push(normKey);
+                    saveBlocklist();
+                    notify(`Blocked track: "${info.track}" from scrobbling`);
+                }
+            },
+            isTrack
+        );
+
+        const blockArtistItem = new Spicetify.ContextMenu.Item(
+            'Block / Unblock Artist',
+            async (uris) => {
+                const info = await getTrackInfoFromContext(uris);
+                if (!info?.artist) return;
+                const normArtist = normalizeArtistKey(info.artist);
+                const idx = blocklist.artists.findIndex(a => normalizeArtistKey(a) === normArtist);
+                if (idx >= 0) {
+                    blocklist.artists.splice(idx, 1);
+                    saveBlocklist();
+                    notify(`Unblocked artist: "${info.artist}"`);
+                } else {
+                    blocklist.artists.push(info.artist);
+                    saveBlocklist();
+                    notify(`Blocked artist: "${info.artist}" from scrobbling`);
+                }
+            },
+            isTrack
+        );
+
+        const items = [viewItem, editItem, loveItem, blockTrackItem, blockArtistItem];
+
+        try {
+            if (Spicetify.ContextMenu.SubMenu) {
+                new Spicetify.ContextMenu.SubMenu('SpicetifyFM', items, isTrack).register();
+            } else {
+                items.forEach(it => it.register());
+            }
+        } catch (err) {
+            console.debug('[SpicetifyFM] Could not create SubMenu, registering flat items:', err);
+            items.forEach(it => {
+                try {
+                    it.name = `SpicetifyFM: ${it.name}`;
+                    it.register();
+                } catch (_) {}
+            });
+        }
+    }
+
+    // ==================== SPOTIFY LIKE TO LAST.FM LOVED AUTO-SYNC ====================
+    function initLikeSyncWatcher() {
+        let lastObservedUri = '';
+        let lastObservedLiked = false;
+
+        setInterval(() => {
+            if (!settings.syncSpotifyLikesToLoved || !isAuthenticated()) return;
+            const nowPlaying = extractRawSpotifyMetadata();
+            if (!nowPlaying?.uri) return;
+
+            const bar = document.querySelector('.main-nowPlayingBar-left, [data-testid="now-playing-widget"]');
+            if (!bar) return;
+
+            const likeBtn = [...bar.querySelectorAll('button')].find(b =>
+                /add to playlist|save to your library|liked songs|like/i.test(b.getAttribute('aria-label') || '')
+            );
+            if (!likeBtn) return;
+
+            const isLiked = /remove|liked|added/i.test(likeBtn.getAttribute('aria-label') || '') ||
+                            likeBtn.getAttribute('aria-checked') === 'true' ||
+                            likeBtn.classList.contains('main-addButton-active');
+
+            if (nowPlaying.uri === lastObservedUri) {
+                if (isLiked !== lastObservedLiked) {
+                    lastObservedLiked = isLiked;
+                    LastFmApi.setTrackLove({
+                        artist: nowPlaying.artist,
+                        track: nowPlaying.track,
+                        loved: isLiked
+                    }).then(() => {
+                        notify(`${isLiked ? 'Loved ♥' : 'Unloved'} on Last.fm: ${nowPlaying.artist} - ${nowPlaying.track}`);
+                        if (currentSession && currentSession.uri === nowPlaying.uri) {
+                            currentSession.userLoved = isLiked;
+                            updateUI();
+                        }
+                    }).catch(err => {
+                        console.debug('[SpicetifyFM] Auto-sync like error:', err);
+                    });
+                }
+            } else {
+                lastObservedUri = nowPlaying.uri;
+                lastObservedLiked = isLiked;
+            }
+        }, 1200);
+    }
+
+    initContextMenu();
+    initLikeSyncWatcher();
+
+    console.log('[SpicetifyFM] Loaded In-App Last.fm Scrobbler v1.0.3');
 })();

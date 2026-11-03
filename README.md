@@ -23,6 +23,9 @@ A pure **in-app Last.fm scrobbler** for Spotify via Spicetify, inspired by **Pan
 
 ## ✨ Features
 
+- **📊 In-App Top Charts & Stats:** Explore your ranked #1–25 Top Tracks, Top Artists, and Top Albums across 7 Days, 30 Days, 90 Days, 1 Year, or All-Time with direct Spotify playback.
+- **🧠 ListenBrainz Dual-Scrobbling:** Simultaneously scrobble to ListenBrainz & MusicBrainz with dedicated offline retry queueing and token validation.
+- **🔥 Streaks & Milestones:** Track daily listening streaks, customizable daily scrobble goals, and celebratory toasts for track & profile milestones.
 - **🎵 Tracklist Scrobble Badges:** Compact Last.fm red playcount badges directly beside track artists in playlists, Liked Songs, and albums.
 - **🎤 Total Artist Scrobbles:** View your all-time scrobble counts right inside artist page headers.
 - **🎧 Player Bar Badge & Alt + L Dashboard:** Scrobble count pill in the bottom-left player bar and full dashboard via `Alt + L`.
@@ -75,6 +78,12 @@ Invoke-WebRequest -UseBasicParsing "https://raw.githubusercontent.com/rtZenith/S
 
 <details>
 <summary><b>📋 Changelog</b></summary>
+
+### v1.0.3
+- **In-App Top Charts & Stats Tab:** Ranked #1–25 Top Tracks, Artists, and Albums with period filters (7d/30d/90d/1y/All-Time), artwork resolution, and direct Spotify search/navigation.
+- **ListenBrainz Dual-Scrobbling:** Simultaneous real-time scrobbling to ListenBrainz with user token validation and independent offline retry queue.
+- **Gamification & Daily Streaks:** Daily listening streak tracker (`🔥`), customizable daily scrobble goal progress bar, and floating glassmorphic milestone celebrations.
+- **Anti-Duplicate Scrobble Guard:** Prevent duplicate scrobbles and double playcount increments.
 
 ### v1.0.2
 - In-tracklist artist scrobble badges with zero CSS grid modification.
