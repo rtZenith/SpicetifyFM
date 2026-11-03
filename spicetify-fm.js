@@ -958,6 +958,28 @@
         return String(artist || '').trim().toLowerCase();
     }
 
+    function cleanTrackTitle(title) {
+        if (!title) return '';
+        let t = String(title).trim();
+        // Remaster patterns
+        t = t.replace(/\s*-\s*(?:(?:\d{4}\s+)?remaster(?:ed)?(?:\s+\d{4})?(?:\s+version)?).*$/i, '');
+        t = t.replace(/\s*[\(\[]\s*(?:\d{4}\s+)?remaster(?:ed)?(?:\s+\d{4})?(?:\s+version)?\s*[\)\]]/gi, '');
+        t = t.replace(/\s*-\s*remastered$/i, '');
+        // Live patterns: - Live, (Live), [Live], - Live at ...
+        t = t.replace(/\s*-\s*live(?:\s+at|\s+from)?.*$/i, '');
+        t = t.replace(/\s*[\(\[]\s*live(?:\s+at|\s+from)?.*[\)\]]/gi, '');
+        // Acoustic patterns: - Acoustic, (Acoustic)
+        t = t.replace(/\s*-\s*acoustic.*$/i, '');
+        t = t.replace(/\s*[\(\[]\s*acoustic.*[\)\]]/gi, '');
+        // Deluxe / Bonus patterns
+        t = t.replace(/\s*-\s*(?:deluxe|expanded|special)\s*(?:edition|version)$/i, '');
+        t = t.replace(/\s*[\(\[]\s*(?:deluxe|bonus track|anniversary|special edition)[\)\]]/gi, '');
+        // Feat patterns
+        t = t.replace(/\s*[\(\[]\s*(?:feat|ft)\.?\s+[^\)\]]+[\)\]]/gi, '');
+        t = t.replace(/\s*-\s*(?:feat|ft)\.?\s+.+$/i, '');
+        return t.trim();
+    }
+
     function isTrackOrArtistBlocked(artist, track) {
         const artistNorm = normalizeArtistKey(artist);
         const trackNorm = normalizeEditKey(artist, track);
@@ -1350,6 +1372,9 @@
             const currentPlays = session.userPlaycount ?? (trackPlaysCache.get(normalizeEditKey(session.artist, session.track)) || 0);
             session.userPlaycount = currentPlays + 1;
             saveTrackPlay(session.artist, session.track, session.userPlaycount);
+            if (session.rawTrack && (session.rawTrack !== session.track || session.rawArtist !== session.artist)) {
+                saveTrackPlay(session.rawArtist, session.rawTrack, session.userPlaycount);
+            }
 
             sessionLog.unshift({
                 ...scrobblePayload,
@@ -1761,12 +1786,30 @@
                 persistCurrentSessionProgress();
             }
             startNewTrackSession({ forceFresh: isSameSongRestart });
+
+            // Auto-sync offline scrobbles on song change if online
+            if (offlineQueue.length > 0 && isAuthenticated() && !isFlushingQueue) {
+                flushOfflineQueue();
+            }
+            if (listenBrainzQueue.length > 0 && settings.enableListenBrainz && !ListenBrainzApi.isFlushing) {
+                ListenBrainzApi.flushQueue();
+            }
         }, 150);
     });
 
     Spicetify.Player.addEventListener('onplaypause', () => {
         persistCurrentSessionProgress();
         updatePlaybarPill();
+
+        // Auto-sync offline scrobbles on resume if online
+        if (Spicetify.Player.isPlaying()) {
+            if (offlineQueue.length > 0 && isAuthenticated() && !isFlushingQueue) {
+                flushOfflineQueue();
+            }
+            if (listenBrainzQueue.length > 0 && settings.enableListenBrainz && !ListenBrainzApi.isFlushing) {
+                ListenBrainzApi.flushQueue();
+            }
+        }
     });
 
     window.addEventListener('beforeunload', () => {
@@ -1781,6 +1824,17 @@
             ListenBrainzApi.flushQueue();
         }
     });
+
+    // Automatic background auto-sync interval for offline scrobbles (every 30 seconds)
+    setInterval(() => {
+        if (!navigator.onLine) return;
+        if (offlineQueue.length > 0 && isAuthenticated() && !isFlushingQueue) {
+            flushOfflineQueue();
+        }
+        if (listenBrainzQueue.length > 0 && settings.enableListenBrainz && !ListenBrainzApi.isFlushing) {
+            ListenBrainzApi.flushQueue();
+        }
+    }, 30000);
 
     // ==================== DESKTOP WEB AUTH FLOW ====================
     function stopAuthPolling() {
@@ -2952,6 +3006,13 @@
         if (!track) return;
         const key = normalizeEditKey(artist, track);
         trackPlaysCache.set(key, plays);
+
+        // Also index cleaned title variant if different
+        const cleaned = cleanTrackTitle(track);
+        if (cleaned && cleaned.toLowerCase() !== track.toLowerCase()) {
+            trackPlaysCache.set(normalizeEditKey(artist, cleaned), plays);
+        }
+
         requestTracklistRepaint();
         updateNowPlayingBadgeContent();
         if (!dbInstance) return;
@@ -2961,20 +3022,109 @@
         } catch (_) {}
     }
 
-    async function saveTracksBatch(trackList) {
-        if (!dbInstance || !trackList.length) return;
-        try {
-            const tx = dbInstance.transaction(DB_STORE, 'readwrite');
-            const store = tx.objectStore(DB_STORE);
-            for (const t of trackList) {
-                store.put(t);
+    function saveTracksBatch(trackList) {
+        return new Promise(resolve => {
+            if (!dbInstance || !trackList.length) return resolve();
+            try {
+                const tx = dbInstance.transaction(DB_STORE, 'readwrite');
+                const store = tx.objectStore(DB_STORE);
+                for (const t of trackList) {
+                    store.put(t);
+                }
+                tx.oncomplete = () => resolve();
+                tx.onerror = () => resolve();
+                tx.onabort = () => resolve();
+            } catch (_) {
+                resolve();
             }
-        } catch (_) {}
+        });
+    }
+
+    function pruneOldCachedTracks(syncStartTime) {
+        return new Promise(resolve => {
+            if (!dbInstance) return resolve(0);
+            try {
+                const tx = dbInstance.transaction(DB_STORE, 'readwrite');
+                const store = tx.objectStore(DB_STORE);
+                const req = store.getAll();
+                req.onsuccess = () => {
+                    const items = req.result || [];
+                    let deletedCount = 0;
+                    for (const item of items) {
+                        if (item && item.key && (!item.updatedAt || item.updatedAt < syncStartTime)) {
+                            store.delete(item.key);
+                            trackPlaysCache.delete(item.key);
+                            deletedCount++;
+                        }
+                    }
+                    tx.oncomplete = () => resolve(deletedCount);
+                };
+                req.onerror = () => resolve(0);
+            } catch (_) {
+                resolve(0);
+            }
+        });
+    }
+
+    function pruneStaleCacheEntries(maxAgeDays = 60) {
+        return new Promise(resolve => {
+            if (!dbInstance) return resolve(0);
+            const cutoff = Date.now() - (maxAgeDays * 24 * 60 * 60 * 1000);
+            try {
+                const tx = dbInstance.transaction(DB_STORE, 'readwrite');
+                const store = tx.objectStore(DB_STORE);
+                const req = store.getAll();
+                req.onsuccess = () => {
+                    const items = req.result || [];
+                    let pruned = 0;
+                    for (const item of items) {
+                        if (item && item.key) {
+                            if (!item.plays && item.updatedAt && item.updatedAt < cutoff) {
+                                store.delete(item.key);
+                                trackPlaysCache.delete(item.key);
+                                pruned++;
+                            }
+                        }
+                    }
+                    tx.oncomplete = () => resolve(pruned);
+                };
+                req.onerror = () => resolve(0);
+            } catch (_) {
+                resolve(0);
+            }
+        });
+    }
+
+    async function clearCachedLibrary() {
+        trackPlaysCache.clear();
+        artistPlaysCache.clear();
+        albumPlaysCache.clear();
+        chartsCache.clear();
+        chartImagesCache.clear();
+        if (dbInstance) {
+            await new Promise(resolve => {
+                try {
+                    const tx = dbInstance.transaction(DB_STORE, 'readwrite');
+                    tx.objectStore(DB_STORE).clear();
+                    tx.oncomplete = () => resolve();
+                    tx.onerror = () => resolve();
+                    tx.onabort = () => resolve();
+                } catch (_) {
+                    resolve();
+                }
+            });
+        }
+        settings.lastLibrarySyncTs = 0;
+        saveSettings();
+        requestTracklistRepaint(true);
+        updateNowPlayingBadgeContent();
     }
 
     async function syncFullLibrary(onProgress) {
         if (isSyncingLibrary || !isAuthenticated()) return;
         isSyncingLibrary = true;
+        const syncStartTime = Date.now();
+        let totalPruned = 0;
         try {
             let page = 1;
             let totalPages = 1;
@@ -2991,12 +3141,23 @@
 
                 const batch = [];
                 for (const t of tracks) {
-                    const artist = t.artist?.name || '';
-                    const name = t.name || '';
-                    const plays = Number(t.playcount) || 0;
+                    const artist = typeof t.artist === 'string'
+                        ? t.artist
+                        : (t.artist?.name || t.artist?.['#text'] || '');
+                    const name = typeof t.name === 'string'
+                        ? t.name
+                        : (t.name?.['#text'] || '');
+                    const plays = Number(t.playcount ?? t['@attr']?.playcount ?? 0) || 0;
                     if (!name) continue;
                     const key = normalizeEditKey(artist, name);
                     trackPlaysCache.set(key, plays);
+
+                    // Also index cleaned title variant if different
+                    const cleaned = cleanTrackTitle(name);
+                    if (cleaned && cleaned.toLowerCase() !== name.toLowerCase()) {
+                        trackPlaysCache.set(normalizeEditKey(artist, cleaned), plays);
+                    }
+
                     batch.push({ key, artist, track: name, plays, updatedAt: Date.now() });
                 }
 
@@ -3014,10 +3175,18 @@
                 }
             } while (page <= totalPages && page <= 50);
 
+            // PRUNE OLD/STALE CACHED TRACKS:
+            // If all pages of the library were fetched, any track in IndexedDB that
+            // was not updated in this sync was deleted or renamed on Last.fm. Prune it!
+            if (page > totalPages && dbInstance) {
+                totalPruned = await pruneOldCachedTracks(syncStartTime);
+            }
+
             settings.lastLibrarySyncTs = Math.floor(Date.now() / 1000);
             saveSettings();
             if (settings.showNotifications) {
-                notify(`Last.fm library synced: ${trackPlaysCache.size} tracks cached.`);
+                const prunedMsg = totalPruned > 0 ? ` (pruned ${totalPruned} old/removed tracks)` : '';
+                notify(`Last.fm library synced: ${trackPlaysCache.size} tracks cached${prunedMsg}.`);
             }
         } catch (err) {
             console.warn('[SpicetifyFM] Library sync failed:', err);
@@ -3206,8 +3375,23 @@
         while (trackFetchQueue.length > 0) {
             const item = trackFetchQueue.shift();
             try {
-                const data = await LastFmApi.getTrackInfo({ artist: item.artist, track: item.track });
-                const plays = Number(data?.userplaycount) || 0;
+                let data = await LastFmApi.getTrackInfo({ artist: item.artist, track: item.track });
+                let plays = Number(data?.userplaycount) || 0;
+
+                // Fallback: If 0 plays, try with primary artist and cleaned track title
+                if (plays === 0) {
+                    const primary = item.artist.split(/[,&]/)[0]?.trim();
+                    const cleaned = cleanTrackTitle(item.track);
+                    if ((primary && primary.toLowerCase() !== item.artist.toLowerCase()) || (cleaned && cleaned.toLowerCase() !== item.track.toLowerCase())) {
+                        const fallbackData = await LastFmApi.getTrackInfo({
+                            artist: primary || item.artist,
+                            track: cleaned || item.track
+                        });
+                        const fallbackPlays = Number(fallbackData?.userplaycount) || 0;
+                        if (fallbackPlays > 0) plays = fallbackPlays;
+                    }
+                }
+
                 saveTrackPlay(item.artist, item.track, plays);
             } catch (_) {
                 trackPlaysCache.set(item.key, 0);
@@ -3365,25 +3549,50 @@
             }
 
             const key = normalizeEditKey(info.artist, info.title);
-            const count = trackPlaysCache.get(key);
+            let count = trackPlaysCache.get(key);
+
+            // Fallback 1: Check cleaned track title (remastered, deluxe, feat, live, acoustic stripped)
+            if (count === undefined) {
+                const cleaned = cleanTrackTitle(info.title);
+                if (cleaned && cleaned.toLowerCase() !== info.title.toLowerCase()) {
+                    count = trackPlaysCache.get(normalizeEditKey(info.artist, cleaned));
+                }
+            }
+
+            // Fallback 2: Check primary artist if multiple artists listed
+            if (count === undefined) {
+                const primary = info.artist.split(/[,&]/)[0]?.trim();
+                if (primary && primary.toLowerCase() !== info.artist.toLowerCase()) {
+                    count = trackPlaysCache.get(normalizeEditKey(primary, info.title));
+                    if (count === undefined) {
+                        const cleaned = cleanTrackTitle(info.title);
+                        if (cleaned) {
+                            count = trackPlaysCache.get(normalizeEditKey(primary, cleaned));
+                        }
+                    }
+                }
+            }
+
             const stamp = `${key}|${count !== undefined ? count : -1}`;
 
-            if (row.dataset.sfmStamp === stamp && badge.textContent && badge.textContent !== '...') {
+            if (row.dataset.sfmStamp === stamp && badge.dataset.sfmSet === '1') {
                 return;
             }
             row.dataset.sfmStamp = stamp;
+            badge.dataset.sfmSet = '1';
 
             if (count !== undefined && count > 0) {
+                badge.style.display = 'inline-flex';
                 badge.textContent = formatPillCount(count);
                 badge.title = `${count.toLocaleString()} scrobbles on Last.fm • Click to view song on Last.fm`;
                 badge.classList.remove('state-zero');
             } else if (count === 0) {
-                badge.textContent = '-';
-                badge.title = '0 scrobbles on Last.fm • Click to view song on Last.fm';
+                badge.style.display = 'none';
+                badge.textContent = '';
                 badge.classList.add('state-zero');
             } else {
-                badge.textContent = '-';
-                badge.title = 'Click to view song on Last.fm';
+                badge.style.display = 'none';
+                badge.textContent = '';
                 badge.classList.add('state-zero');
                 queueTrackPlayCountFetch(info.artist, info.title);
             }
@@ -5474,17 +5683,6 @@
                     </div>
                     <input type="checkbox" id="sfm-chk-like-sync" ${settings.syncSpotifyLikesToLoved ? 'checked' : ''} />
                 </div>
-                <div style="display:flex; justify-content:space-between; align-items:center; margin-top:12px; padding-top:10px; border-top:1px solid rgba(255,255,255,0.08); flex-wrap:wrap; gap:8px;">
-                    <div>
-                        <strong style="font-size:13px;">Offline Track Playcounts Cache</strong>
-                        <div style="font-size:11.5px; color:rgba(255,255,255,0.6);" id="sfm-sync-status-lbl">
-                            ${trackPlaysCache.size} tracks cached locally in IndexedDB
-                        </div>
-                    </div>
-                    <button class="sfm-btn primary" id="sfm-sync-lib-btn" ${isSyncingLibrary ? 'disabled' : ''}>
-                        ${isSyncingLibrary ? 'Syncing...' : 'Sync Last.fm Library Now'}
-                    </button>
-                </div>
             </div>
 
             <div class="sfm-card" style="margin-top:12px;">
@@ -5677,26 +5875,6 @@
             saveSettings();
         });
 
-        container.querySelector('#sfm-sync-lib-btn')?.addEventListener('click', async () => {
-            const btn = container.querySelector('#sfm-sync-lib-btn');
-            const lbl = container.querySelector('#sfm-sync-status-lbl');
-            if (btn) btn.disabled = true;
-            notify('Starting Last.fm library playcounts sync...');
-            await syncFullLibrary(progress => {
-                if (btn) btn.textContent = `Syncing (${progress.loadedCount} tracks)...`;
-                if (lbl) lbl.textContent = `Page ${progress.page}/${progress.totalPages} • ${progress.loadedCount} tracks cached`;
-            });
-            if (btn) {
-                btn.disabled = false;
-                btn.textContent = 'Sync Last.fm Library Now';
-            }
-            if (lbl) {
-                lbl.textContent = `${trackPlaysCache.size} tracks cached locally in IndexedDB`;
-            }
-            notify(`Last.fm library sync complete: ${trackPlaysCache.size} tracks.`);
-            renderModalContent();
-        });
-
         // ListenBrainz card handlers
         container.querySelector('#sfm-open-lb-profile')?.addEventListener('click', () => {
             window.open('https://listenbrainz.org/profile/', '_blank');
@@ -5802,10 +5980,12 @@
     // Load cached library and schedule background sync if needed
     loadCachedLibrary().then(() => {
         requestTracklistRepaint();
+        pruneStaleCacheEntries(60);
         const now = Math.floor(Date.now() / 1000);
         const twelveHours = 12 * 60 * 60;
-        if (isAuthenticated() && (!settings.lastLibrarySyncTs || now - settings.lastLibrarySyncTs > twelveHours)) {
-            setTimeout(() => syncFullLibrary(), 5000);
+        if (isAuthenticated() && (trackPlaysCache.size === 0 || !settings.lastLibrarySyncTs || now - settings.lastLibrarySyncTs > twelveHours)) {
+            const delay = trackPlaysCache.size === 0 ? 1000 : 5000;
+            setTimeout(() => syncFullLibrary(), delay);
         }
     });
 
@@ -5864,7 +6044,10 @@
             .catch(() => {});
 
         if (offlineQueue.length > 0) {
-            setTimeout(() => flushOfflineQueue(), 4000);
+            setTimeout(() => flushOfflineQueue(), 2500);
+        }
+        if (listenBrainzQueue.length > 0 && settings.enableListenBrainz) {
+            setTimeout(() => ListenBrainzApi.flushQueue(), 3000);
         }
     }
 
